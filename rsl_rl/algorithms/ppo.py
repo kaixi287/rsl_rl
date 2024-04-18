@@ -67,7 +67,7 @@ class PPO:
         self.actor_critic.train()
 
     def act(self, obs, critic_obs):
-        if self.actor_critic.is_recurrent:
+        if self.actor_critic.method == "rnn":
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
         # Compute the actions and values
         self.transition.actions = self.actor_critic.act(obs).detach()
@@ -101,10 +101,11 @@ class PPO:
     def update(self):
         mean_value_loss = 0
         mean_surrogate_loss = 0
-        if self.actor_critic.is_recurrent:
-            generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
-        else:
+        if self.actor_critic.method == "vanilla":
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
+        else:
+            generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.actor_critic.method, self.num_learning_epochs)
+            
         for (
             obs_batch,
             critic_obs_batch,

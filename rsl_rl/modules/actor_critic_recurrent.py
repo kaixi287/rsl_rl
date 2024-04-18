@@ -11,7 +11,7 @@ from rsl_rl.utils import unpad_trajectories
 
 
 class ActorCriticRecurrent(ActorCritic):
-    is_recurrent = True
+    method = "rnn"
 
     def __init__(
         self,

@@ -17,7 +17,7 @@ algorithm:
   num_mini_batches: 4  # mini batch size = num_envs * num_steps / num_mini_batches
   schedule: adaptive  # adaptive, fixed
 policy:
-  class_name: ActorCritic
+  class_name: ActorCriticTransformer
   # for MLP i.e. `ActorCritic`
   activation: elu
   actor_hidden_dims: [128, 128, 128]
@@ -27,6 +27,12 @@ policy:
   # rnn_type: 'lstm'
   # rnn_hidden_size: 512
   # rnn_num_layers: 1
+  # only nedded for "ActorCriticTransformer"
+  max_seq_len: 24
+  d_model: 512
+  transformer_num_heads: 8
+  transformer_num_layers: 6
+
 runner:
     num_steps_per_env: 24  # number of steps per environment per iteration
     max_iterations: 1500  # number of policy updates

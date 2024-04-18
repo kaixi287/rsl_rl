@@ -10,7 +10,7 @@ from torch.distributions import Normal
 
 
 class ActorCritic(nn.Module):
-    is_recurrent = False
+    method = "vanilla"
 
     def __init__(
         self,
