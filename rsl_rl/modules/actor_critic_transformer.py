@@ -124,4 +124,3 @@ class TransformerMemory(nn.Module):
         out = unpad_trajectories(out, masks)
 
         return out
-    
