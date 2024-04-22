@@ -112,6 +112,7 @@ class TransformerMemory(nn.Module):
         else:
             # inference mode
             x = x.unsqueeze(1)
+            padding_masks = None
 
         # Embed the input (seq_len, batch_size, num_obs)
         x = self.embedding(x)
