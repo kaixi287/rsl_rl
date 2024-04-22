@@ -95,6 +95,7 @@ class TransformerMemory(nn.Module):
     def __init__(self, input_dim, max_seq_len, num_heads, num_layers, d_model, d_ff: int = 2048, dropout: float = 0.1):
         super().__init__()
 
+        self.max_seq_len = max_seq_len
         self.embedding = nn.Linear(input_dim, d_model)
         self.pos_encoder = PositionalEncoding(d_model, max_seq_len, dropout)
         transformer_layer =nn.TransformerEncoderLayer(d_model=d_model,
@@ -107,18 +108,23 @@ class TransformerMemory(nn.Module):
     def forward(self, x, masks=None):
 
         if masks is not None:
+            # Training mode
             # Padding mask should be (batch_size, seq_len), with True values for positions to ignore (padding)
             padding_masks = ~masks.t()
+            
+            # Generate a causal mask to ensure the self-attention only attends to preceding tokens
+            causal_mask = nn.Transformer.generate_square_subsequent_mask(x.size(0))
         else:
             # inference mode
             x = x.unsqueeze(1)
             padding_masks = None
+            
+            # For inference, generate a mask for the maximal possible sequence length
+            causal_mask = nn.Transformer.generate_square_subsequent_mask(self.max_seq_length)[:x.size(0), :x.size(0)]
 
         # Embed the input (seq_len, batch_size, num_obs)
         x = self.embedding(x)
         x = self.pos_encoder(x) # (seq_len, batch_size, d_model)
-        
-        causal_mask = self.transformer_encoder.generate_square_subsequent_mask(x.shape[0]).to(x.device)
 
         # Pass through the transformer. Note that we use a causal tranformer encoder here so that the self-attention
         # only attends to preceding tokens.
