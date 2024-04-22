@@ -117,10 +117,12 @@ class TransformerMemory(nn.Module):
         # Embed the input (seq_len, batch_size, num_obs)
         x = self.embedding(x)
         x = self.pos_encoder(x) # (seq_len, batch_size, d_model)
+        
+        causal_mask = self.transformer_encoder.generate_square_subsequent_mask(x.shape[0]).to(x.device)
 
         # Pass through the transformer. Note that we use a causal tranformer encoder here so that the self-attention
         # only attends to preceding tokens.
-        out = self.transformer_encoder(x, src_key_padding_mask=padding_masks, is_causal=True)   # (seq_len, batch_size, d_model)
+        out = self.transformer_encoder(x, masks=causal_mask, src_key_padding_mask=padding_masks, is_causal=True)   # (seq_len, batch_size, d_model)
 
         out = unpad_trajectories(out, masks)
 
