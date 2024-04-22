@@ -130,6 +130,7 @@ class TransformerMemory(nn.Module):
         # only attends to preceding tokens.
         out = self.transformer_encoder(x, mask=causal_mask, src_key_padding_mask=padding_masks, is_causal=True)   # (seq_len, batch_size, d_model)
 
-        out = unpad_trajectories(out, masks)
+        if masks is not None:
+            out = unpad_trajectories(out, masks)
 
         return out
