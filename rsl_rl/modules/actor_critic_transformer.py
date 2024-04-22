@@ -132,5 +132,7 @@ class TransformerMemory(nn.Module):
 
         if masks is not None:
             out = unpad_trajectories(out, masks)
+        
+        print(f"transformer encoder output shape: {out.shape}")
 
         return out
