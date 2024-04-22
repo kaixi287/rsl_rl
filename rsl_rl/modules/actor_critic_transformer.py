@@ -132,7 +132,8 @@ class TransformerMemory(nn.Module):
 
         if masks is not None:
             out = unpad_trajectories(out, masks)
-        
-        print(f"transformer encoder output shape: {out.shape}")
+            print(f"RNN output shape in training mode: {out.shape}")
+        else:
+            print(f"RNN output shape in inference mode: {out.shape}")
 
         return out
