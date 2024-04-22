@@ -128,7 +128,7 @@ class TransformerMemory(nn.Module):
 
         # Pass through the transformer. Note that we use a causal tranformer encoder here so that the self-attention
         # only attends to preceding tokens.
-        out = self.transformer_encoder(x, masks=causal_mask, src_key_padding_mask=padding_masks, is_causal=True)   # (seq_len, batch_size, d_model)
+        out = self.transformer_encoder(x, mask=causal_mask, src_key_padding_mask=padding_masks, is_causal=True)   # (seq_len, batch_size, d_model)
 
         out = unpad_trajectories(out, masks)
 
