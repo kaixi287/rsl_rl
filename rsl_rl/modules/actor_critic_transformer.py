@@ -120,7 +120,7 @@ class TransformerMemory(nn.Module):
             padding_masks = None
             
             # For inference, generate a mask for the maximal possible sequence length
-            causal_mask = nn.Transformer.generate_square_subsequent_mask(self.max_seq_length)[:x.size(0), :x.size(0)]
+            causal_mask = nn.Transformer.generate_square_subsequent_mask(self.max_seq_len)[:x.size(0), :x.size(0)]
 
         # Embed the input (seq_len, batch_size, num_obs)
         x = self.embedding(x)
