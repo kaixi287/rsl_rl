@@ -201,7 +201,7 @@ class RolloutStorage:
                 old_actions_log_prob_batch = self.actions_log_prob[:, start:stop]
 
                 hid_a_batch = None
-                hid_a_batch = None
+                hid_c_batch = None
 
                 if method == "rnn":
                     # reshape to [num_envs, time, num layers, hidden dim] (original shape: [time, num_layers, num_envs, hidden_dim])
