@@ -113,15 +113,17 @@ class TransformerMemory(nn.Module):
             padding_masks = ~masks.t()
             
             # Generate a causal mask to ensure the self-attention only attends to preceding tokens
-            causal_mask = nn.Transformer.generate_square_subsequent_mask(x.size(0))
+            causal_mask = nn.Transformer.generate_square_subsequent_mask(x.size(0), x.device)
+            print(f"padding mask device: {padding_masks.device}")
         else:
             # inference mode
             x = x.unsqueeze(1)
             padding_masks = None
             
             # For inference, generate a mask for the maximal possible sequence length
-            causal_mask = nn.Transformer.generate_square_subsequent_mask(self.max_seq_len)[:x.size(0), :x.size(0)]
+            causal_mask = nn.Transformer.generate_square_subsequent_mask(self.max_seq_len, x.device)[:x.size(0), :x.size(0)]
             print(f"Inference causal mask shape: {causal_mask.shape}")
+        print(f"causal mask devide: {causal_mask.device}")
 
 
         # Embed the input (seq_len, batch_size, num_obs)
