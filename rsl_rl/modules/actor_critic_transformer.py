@@ -114,6 +114,7 @@ class TransformerMemory(nn.Module):
             
             # Generate a causal mask to ensure the self-attention only attends to preceding tokens
             causal_mask = nn.Transformer.generate_square_subsequent_mask(x.size(0))
+            print(f"Training padding_masks: {padding_masks}, causal mask: {causal_mask}")
         else:
             # inference mode
             x = x.unsqueeze(1)
@@ -121,19 +122,24 @@ class TransformerMemory(nn.Module):
             
             # For inference, generate a mask for the maximal possible sequence length
             causal_mask = nn.Transformer.generate_square_subsequent_mask(self.max_seq_len)[:x.size(0), :x.size(0)]
+            print(f"Inference padding_masks: {padding_masks}, causal mask: {causal_mask}")
+            print(f"Inference causal mask shape: {causal_mask.shape}")
+
 
         # Embed the input (seq_len, batch_size, num_obs)
         x = self.embedding(x)
+        print(f"Embedded input shape: {x.shape}")
         x = self.pos_encoder(x) # (seq_len, batch_size, d_model)
+        print(f"Embedded input with PE shape: {x.shape}")
 
         # Pass through the transformer. Note that we use a causal tranformer encoder here so that the self-attention
         # only attends to preceding tokens.
         out = self.transformer_encoder(x, mask=causal_mask, src_key_padding_mask=padding_masks, is_causal=True)   # (seq_len, batch_size, d_model)
-
+        print(f"Transformer output shape: {out.shape}")
         if masks is not None:
             out = unpad_trajectories(out, masks)
-            print(f"RNN output shape in training mode: {out.shape}")
+            print(f"Transformer unpadded trajectory in training mode: {out.shape}")
         else:
-            print(f"RNN output shape in inference mode: {out.shape}")
+            print(f"Transformer output shape in inference mode: {out.shape}")   # torch.Size([4096, 1, 512])
 
         return out
