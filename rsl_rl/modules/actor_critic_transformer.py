@@ -107,40 +107,60 @@ class TransformerMemory(nn.Module):
     
     def forward(self, x, masks=None):
 
+        seq_len = x.size(0)
+
         if masks is not None:
             # Training mode
-            # Padding mask should be (batch_size, seq_len), with True values for positions to ignore (padding)
+            # Padding mask should be (batch_size, seq_len), with True values for positions to ignore
             padding_masks = ~masks.t()
-            
-            # Generate a causal mask to ensure the self-attention only attends to preceding tokens
-            causal_mask = nn.Transformer.generate_square_subsequent_mask(x.size(0), x.device)
-            print(f"padding mask device: {padding_masks.device}")
         else:
-            # inference mode
-            x = x.unsqueeze(1)
+            # Inference mode
+            x = x.unsqueeze(1)  # Adjust for batch dimension in inference
             padding_masks = None
-            
-            # For inference, generate a mask for the maximal possible sequence length
-            causal_mask = nn.Transformer.generate_square_subsequent_mask(self.max_seq_len, x.device)[:x.size(0), :x.size(0)]
-            print(f"Inference causal mask shape: {causal_mask.shape}")
-        print(f"causal mask devide: {causal_mask.device}")
-
-
-        # Embed the input (seq_len, batch_size, num_obs)
-        x = self.embedding(x)
-        print(f"Embedded input shape: {x.shape}")
-        x = self.pos_encoder(x) # (seq_len, batch_size, d_model)
-        print(f"Embedded input with PE shape: {x.shape}")
-
-        # Pass through the transformer. Note that we use a causal tranformer encoder here so that the self-attention
-        # only attends to preceding tokens.
-        out = self.transformer_encoder(x, mask=causal_mask, src_key_padding_mask=padding_masks, is_causal=True)   # (seq_len, batch_size, d_model)
-        print(f"Transformer output shape: {out.shape}")
-        if masks is not None:
-            out = unpad_trajectories(out, masks)
-            print(f"Transformer unpadded trajectory in training mode: {out.shape}")
+        
+        if seq_len > self.max_seq_len:
+            # Generate a mask to limit attention to the last 'max_seq_len' tokens
+            causal_mask = self.generate_sliding_window_causal_mask(seq_len, device=x.device)
+            print(f"sliding window causal mask: {causal_mask}")
         else:
-            out = out.transpose(0, 1)
-            print(f"Transformer output shape in inference mode: {out.shape}")   # torch.Size([4096, 1, 512])
+            # Standard causal mask since the sequence length is within the window
+            causal_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=x.device)
+            print(f"standard causal mask: {causal_mask}")
 
-        return out
+        # Embed the input (seq_len, batch_size, num_obs) --> (seq_len, batch_size, d_model)
+        x = self.embedding(x)
+        x = self.pos_encoder(x) # (seq_len, batch_size, d_model)
+
+        # Pass through the transformer.
+        x = self.transformer_encoder(x, mask=causal_mask, src_key_padding_mask=padding_masks)   # (seq_len, batch_size, d_model)
+        if padding_masks is not None:
+            x = unpad_trajectories(x, padding_masks)
+        else:
+            x = x.transpose(0, 1)
+
+        return x
+    
+    def generate_sliding_window_causal_mask(self, sz: int, device: torch.device = torch.device('cpu')) -> torch.Tensor:
+        """Generate a square causal mask to limit attention to the last max_seq_len tokens without loops.
+
+        Args:
+            sz (int): Size of the sequence (and the square mask).
+            max_seq_len (int): Maximum number of tokens a token can attend to from its past.
+            device (torch.device): The device on which to create the mask.
+
+        Returns:
+            torch.Tensor: The sliding window causal mask.
+        """
+        # Create a matrix where each element is its column index
+        cols = torch.arange(sz, device=device).repeat(sz, 1)
+
+        # Create a matrix where each element is its row index
+        rows = torch.arange(sz, device=device).unsqueeze(1).repeat(1, sz)
+
+        # Calculate the difference between each row and column. Mask should be zero if the difference is less than max_seq_len and more than or equal to 0
+        sliding_window_mask = (rows - cols).float()
+
+        # Apply the conditions for the sliding window
+        mask = torch.where((sliding_window_mask >= 0) & (sliding_window_mask < self.max_seq_len), 0., float('-inf'))
+
+        return mask
