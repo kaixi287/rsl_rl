@@ -88,12 +88,12 @@ class Memory(torch.nn.Module):
             out, _ = self.rnn(input, hidden_states)
             print(f"RNN output shape in training mode: {out.shape}")
             out = unpad_trajectories(out, masks)
-            print(f"RNN unpadded trajectory in training mode: {out.shape}")
+            print(f"RNN unpadded trajectory in training mode: {out.shape}") # [24, 1024, 256]
         else:
             print(f"RNN unsqueezed input in inference mode: {input.unsqueeze(0).shape}")
             # inference mode (collection): use hidden states of last step
             out, self.hidden_states = self.rnn(input.unsqueeze(0), self.hidden_states)
-            print(f"RNN output shape in inference mode: {out.shape}")
+            print(f"RNN output shape in inference mode: {out.shape}")   # [1, 4096, 256]
         return out
 
     def reset(self, dones=None):

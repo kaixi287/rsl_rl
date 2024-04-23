@@ -140,6 +140,7 @@ class TransformerMemory(nn.Module):
             out = unpad_trajectories(out, masks)
             print(f"Transformer unpadded trajectory in training mode: {out.shape}")
         else:
+            out = out.transpose(0, 1)
             print(f"Transformer output shape in inference mode: {out.shape}")   # torch.Size([4096, 1, 512])
 
         return out
