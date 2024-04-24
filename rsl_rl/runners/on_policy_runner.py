@@ -32,10 +32,7 @@ class OnPolicyRunner:
             num_critic_obs = extras["observations"]["critic"].shape[1]
         else:
             num_critic_obs = num_obs
-        class_name = self.policy_cfg["class_name"]
-        print(f"class name: {class_name}")
         actor_critic_class = eval(self.policy_cfg.pop("class_name"))  # ActorCritic
-        print(f"actor_critic_class: {actor_critic_class}")
         actor_critic: ActorCritic | ActorCriticRecurrent | ActorCriticTransformer = actor_critic_class(
             num_obs, num_critic_obs, self.env.num_actions, **self.policy_cfg
         ).to(self.device)

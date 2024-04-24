@@ -108,26 +108,26 @@ class TransformerMemory(nn.Module):
     
     def forward(self, x, masks=None):
 
-        seq_len = x.size(0)
-
         if masks is not None:
             # Training mode
             # Padding mask should be (batch_size, seq_len), with True values for positions to ignore
             padding_masks = ~masks.t()
         else:
             # Inference mode
-            x = x.unsqueeze(0)  # Adjust for batch dimension in inference
+            x = x.unsqueeze(0)  # Adjust for seq_len dimension in inference
             padding_masks = None
-            print(f"Input size in inference mode: {x.size}")
+            print(f"Input size in inference mode: {x.shape}")
+        
+        seq_len = x.size(0)
         
         if seq_len > self.attn_seq_len:
-            # Generate a mask to limit attention to the last 'max_seq_len' tokens
+            # Generate a mask to limit attention to the last 'attn_seq_len' tokens
             causal_mask = self.generate_sliding_window_causal_mask(seq_len, device=x.device)
-            print(f"sliding window causal mask: {causal_mask.size}")
+            print(f"sliding window causal mask: {causal_mask.shape}")
         else:
             # Standard causal mask since the sequence length is within the window
             causal_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=x.device)
-            print(f"standard causal mask: {causal_mask.size}")
+            print(f"standard causal mask: {causal_mask.shape}")
 
         # Embed the input (seq_len, batch_size, num_obs) --> (seq_len, batch_size, d_model)
         x = self.embedding(x)
@@ -137,7 +137,7 @@ class TransformerMemory(nn.Module):
         x = self.transformer_encoder(x, mask=causal_mask, src_key_padding_mask=padding_masks)   # (seq_len, batch_size, d_model)
         if padding_masks is not None:
             x = unpad_trajectories(x, padding_masks)
-        print(f"Output size in inference mode: {x.size}")
+        print(f"Output size in inference mode: {x.shape}")
 
         return x
     
