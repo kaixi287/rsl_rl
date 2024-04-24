@@ -112,7 +112,7 @@ class TransformerMemory(nn.Module):
             # Padding mask should be (batch_size, seq_len), with True values for positions to ignore
             padding_masks = ~masks.t()
             print(f"Input size in training mode: {x.shape}")
-            print(f"Padding_mask: {padding_masks}")
+            print(f"Number of paddings: {torch.sum(padding_masks).item()}")
             print(f"Padding_mask shape: {padding_masks.shape}")
         else:
             # Inference mode
@@ -140,6 +140,7 @@ class TransformerMemory(nn.Module):
         if padding_masks is not None:
             x = unpad_trajectories(x, masks)
         print(f"Output size: {x.shape}")
+        print(f"infinite elements: {torch.sum(torch.isinf(x)).item()}")
 
         return x
     
@@ -148,7 +149,6 @@ class TransformerMemory(nn.Module):
 
         Args:
             sz (int): Size of the sequence (and the square mask).
-            max_seq_len (int): Maximum number of tokens a token can attend to from its past.
             device (torch.device): The device on which to create the mask.
 
         Returns:
