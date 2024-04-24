@@ -47,8 +47,8 @@ class ActorCriticTransformer(ActorCritic):
 
         activation = get_activation(activation)
 
-        self.memory_a = TransformerMemory(num_actor_obs, max_seq_len, sliding_window_size, transformer_num_heads, transformer_num_layers, d_model)
-        self.memory_c = TransformerMemory(num_critic_obs, max_seq_len, sliding_window_size, transformer_num_heads, transformer_num_layers, d_model)
+        self.memory_a = TransformerMemory(num_actor_obs, sliding_window_size, transformer_num_heads, transformer_num_layers, d_model)
+        self.memory_c = TransformerMemory(num_critic_obs, sliding_window_size, transformer_num_heads, transformer_num_layers, d_model)
 
         print(f"Actor Transformer: {self.memory_a}")
         print(f"Critic Transformer: {self.memory_c}")
@@ -68,36 +68,36 @@ class ActorCriticTransformer(ActorCritic):
 
 class PositionalEncoding(nn.Module):
     
-    def __init__(self, d_model: int, seq_len: int, dropout: float) -> None:
+    def __init__(self, d_model: int, dropout: float, max_len: int = 500) -> None:
         super().__init__()
         self.d_model = d_model
-        self.seq_len = seq_len
+        self.max_len = max_len
         self.dropout = nn.Dropout(dropout)
         
-        # Create a matrix of shape (seq_len, d_model)
-        pe = torch.zeros(seq_len, d_model)
-        # Create a vector of shape (seq_len)
-        position = torch.arange(0, seq_len, dtype=torch.float).unsqueeze(1)
+        # Create a matrix of shape (max_len, d_model)
+        pe = torch.zeros(max_len, d_model)
+        # Create a vector of shape (max_len)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
         # Apply the sin to even positions
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         
-        pe = pe.unsqueeze(1) # (seq_len, 1, d_model)
+        pe = pe.unsqueeze(1) # (max_len, 1, d_model)
         
         self.register_buffer('pe', pe)
     
     def forward(self, x):
-        x = x + (self.pe[:x.shape[0], :, :]).requires_grad_(False)
+        x = x + (self.pe[:x.shape[0], :]).requires_grad_(False)
         return self.dropout(x)
 
 class TransformerMemory(nn.Module):
-    def __init__(self, input_dim, max_seq_len, sliding_window_size, num_heads, num_layers, d_model, d_ff: int = 2048, dropout: float = 0.1):
+    def __init__(self, input_dim, sliding_window_size, num_heads, num_layers, d_model, d_ff: int = 2048, dropout: float = 0.1):
         super().__init__()
 
         self.sliding_window_size = sliding_window_size
         self.embedding = nn.Linear(input_dim, d_model)
-        self.pos_encoder = PositionalEncoding(d_model, max_seq_len, dropout)
+        self.pos_encoder = PositionalEncoding(d_model, dropout)
         transformer_layer =nn.TransformerEncoderLayer(d_model=d_model,
                                                       nhead=num_heads,
                                                       dim_feedforward=d_ff,
@@ -112,6 +112,8 @@ class TransformerMemory(nn.Module):
             # Padding mask should be (batch_size, seq_len), with True values for positions to ignore
             padding_masks = ~masks.t()
             print(f"Input size in training mode: {x.shape}")
+            print(f"Padding_mask: {padding_masks}")
+            print(f"Padding_mask shape: {padding_masks.shape}")
         else:
             # Inference mode
             x = x.unsqueeze(0)  # Adjust for seq_len dimension in inference
@@ -136,7 +138,7 @@ class TransformerMemory(nn.Module):
         # Pass through the transformer.
         x = self.transformer_encoder(x, mask=causal_mask, src_key_padding_mask=padding_masks)   # (seq_len, batch_size, d_model)
         if padding_masks is not None:
-            x = unpad_trajectories(x, padding_masks)
+            x = unpad_trajectories(x, masks)
         print(f"Output size: {x.shape}")
 
         return x
