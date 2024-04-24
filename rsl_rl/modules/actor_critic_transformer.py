@@ -115,8 +115,9 @@ class TransformerMemory(nn.Module):
             padding_masks = ~masks.t()
         else:
             # Inference mode
-            x = x.unsqueeze(1)  # Adjust for batch dimension in inference
+            x = x.unsqueeze(0)  # Adjust for batch dimension in inference
             padding_masks = None
+            print(f"Input size in inference mode: {x.size}")
         
         if seq_len > self.max_seq_len:
             # Generate a mask to limit attention to the last 'max_seq_len' tokens
@@ -135,8 +136,7 @@ class TransformerMemory(nn.Module):
         x = self.transformer_encoder(x, mask=causal_mask, src_key_padding_mask=padding_masks)   # (seq_len, batch_size, d_model)
         if padding_masks is not None:
             x = unpad_trajectories(x, padding_masks)
-        else:
-            x = x.transpose(0, 1)
+        print(f"Output size in inference mode: {x.size}")
 
         return x
     
