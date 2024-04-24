@@ -23,6 +23,7 @@ class ActorCriticTransformer(ActorCritic):
         actor_hidden_dims=[256, 256, 256],
         critic_hidden_dims=[256, 256, 256],
         activation="elu",
+        attn_seq_len = 16,
         max_seq_len = 24,
         d_model = 512,
         transformer_num_heads=8,
@@ -47,8 +48,8 @@ class ActorCriticTransformer(ActorCritic):
 
         activation = get_activation(activation)
 
-        self.memory_a = TransformerMemory(num_actor_obs, max_seq_len, transformer_num_heads, transformer_num_layers, d_model)
-        self.memory_c = TransformerMemory(num_critic_obs, max_seq_len, transformer_num_heads, transformer_num_layers, d_model)
+        self.memory_a = TransformerMemory(num_actor_obs, attn_seq_len, max_seq_len, transformer_num_heads, transformer_num_layers, d_model)
+        self.memory_c = TransformerMemory(num_critic_obs, attn_seq_len, max_seq_len, transformer_num_heads, transformer_num_layers, d_model)
 
         print(f"Actor Transformer: {self.memory_a}")
         print(f"Critic Transformer: {self.memory_c}")
@@ -92,10 +93,10 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 class TransformerMemory(nn.Module):
-    def __init__(self, input_dim, max_seq_len, num_heads, num_layers, d_model, d_ff: int = 2048, dropout: float = 0.1):
+    def __init__(self, input_dim, attn_seq_len, max_seq_len, num_heads, num_layers, d_model, d_ff: int = 2048, dropout: float = 0.1):
         super().__init__()
 
-        self.max_seq_len = max_seq_len
+        self.attn_seq_len = attn_seq_len
         self.embedding = nn.Linear(input_dim, d_model)
         self.pos_encoder = PositionalEncoding(d_model, max_seq_len, dropout)
         transformer_layer =nn.TransformerEncoderLayer(d_model=d_model,
@@ -119,14 +120,14 @@ class TransformerMemory(nn.Module):
             padding_masks = None
             print(f"Input size in inference mode: {x.size}")
         
-        if seq_len > self.max_seq_len:
+        if seq_len > self.attn_seq_len:
             # Generate a mask to limit attention to the last 'max_seq_len' tokens
             causal_mask = self.generate_sliding_window_causal_mask(seq_len, device=x.device)
-            print(f"sliding window causal mask: {causal_mask}")
+            print(f"sliding window causal mask: {causal_mask.size}")
         else:
             # Standard causal mask since the sequence length is within the window
             causal_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=x.device)
-            print(f"standard causal mask: {causal_mask}")
+            print(f"standard causal mask: {causal_mask.size}")
 
         # Embed the input (seq_len, batch_size, num_obs) --> (seq_len, batch_size, d_model)
         x = self.embedding(x)
@@ -141,7 +142,7 @@ class TransformerMemory(nn.Module):
         return x
     
     def generate_sliding_window_causal_mask(self, sz: int, device: torch.device = torch.device('cpu')) -> torch.Tensor:
-        """Generate a square causal mask to limit attention to the last max_seq_len tokens without loops.
+        """Generate a square causal mask to limit attention to the last attn_seq_len tokens without loops.
 
         Args:
             sz (int): Size of the sequence (and the square mask).
@@ -161,6 +162,6 @@ class TransformerMemory(nn.Module):
         sliding_window_mask = (rows - cols).float()
 
         # Apply the conditions for the sliding window
-        mask = torch.where((sliding_window_mask >= 0) & (sliding_window_mask < self.max_seq_len), 0., float('-inf'))
+        mask = torch.where((sliding_window_mask >= 0) & (sliding_window_mask < self.attn_seq_len), 0., float('-inf'))
 
         return mask
