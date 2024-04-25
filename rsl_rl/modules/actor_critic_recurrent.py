@@ -81,6 +81,7 @@ class Memory(torch.nn.Module):
     def forward(self, input, masks=None, hidden_states=None):
         batch_mode = masks is not None
         if batch_mode:
+            print(f"Input in training mode: {input[:10, :10, :10]}")
             print(f"RNN input in training mode: {input.shape}")
             # batch mode (policy update): need saved hidden states
             if hidden_states is None:
@@ -89,11 +90,16 @@ class Memory(torch.nn.Module):
             print(f"RNN output shape in training mode: {out.shape}")
             out = unpad_trajectories(out, masks)
             print(f"RNN unpadded trajectory in training mode: {out.shape}") # [24, 1024, 256]
+            print(f"Output in inference mode: {out[:10, :10, :10]}")
+
         else:
-            print(f"RNN unsqueezed input in inference mode: {input.unsqueeze(0).shape}")
+            unsqueezed_input = input.unsqueeze(0)
+            print(f"Input in inference mode: {unsqueezed_input[:, :10, :10]}")
+            print(f"RNN unsqueezed input in inference mode: {unsqueezed_input.shape}")
             # inference mode (collection): use hidden states of last step
             out, self.hidden_states = self.rnn(input.unsqueeze(0), self.hidden_states)
             print(f"RNN output shape in inference mode: {out.shape}")   # [1, 4096, 256]
+            print(f"Output in inference mode: {out[:, :10, :10]}")
         return out
 
     def reset(self, dones=None):

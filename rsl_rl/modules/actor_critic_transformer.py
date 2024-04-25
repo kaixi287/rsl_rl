@@ -22,8 +22,7 @@ class ActorCriticTransformer(ActorCritic):
         actor_hidden_dims=[256, 256, 256],
         critic_hidden_dims=[256, 256, 256],
         activation="elu",
-        max_seq_len = 24,
-        sliding_window_size = 16,
+        sliding_window_size = 24,
         d_model = 512,
         transformer_num_heads=8,
         transformer_num_layers=6,
@@ -111,25 +110,21 @@ class TransformerMemory(nn.Module):
             # Training mode
             # Padding mask should be (batch_size, seq_len), with True values for positions to ignore
             padding_masks = ~masks.t()
-            print(f"Input size in training mode: {x.shape}")
             print(f"Number of paddings: {torch.sum(padding_masks).item()}")
-            print(f"Padding_mask shape: {padding_masks.shape}")
         else:
             # Inference mode
             x = x.unsqueeze(0)  # Adjust for seq_len dimension in inference
             padding_masks = None
-            print(f"Input size in inference mode: {x.shape}")
         
         seq_len = x.size(0)
         
-        if seq_len > self.sliding_window_size:
-            # Generate a mask to limit attention to the last 'sliding_window_size' tokens
-            causal_mask = self.generate_sliding_window_causal_mask(seq_len, device=x.device)
-            print(f"sliding window causal mask: {causal_mask.shape}")
-        else:
-            # Standard causal mask since the sequence length is within the window
-            causal_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=x.device)
-            print(f"standard causal mask: {causal_mask.shape}")
+        # if seq_len > self.sliding_window_size:
+        #     # Generate a mask to limit attention to the last 'sliding_window_size' tokens
+        #     causal_mask = self.generate_sliding_window_causal_mask(seq_len, device=x.device)
+        # else:
+
+        # Standard causal mask since the sequence length is within the window
+        causal_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=x.device)
 
         # Embed the input (seq_len, batch_size, num_obs) --> (seq_len, batch_size, d_model)
         x = self.embedding(x)
@@ -139,32 +134,33 @@ class TransformerMemory(nn.Module):
         x = self.transformer_encoder(x, mask=causal_mask, src_key_padding_mask=padding_masks)   # (seq_len, batch_size, d_model)
         if padding_masks is not None:
             x = unpad_trajectories(x, masks)
-        print(f"Output size: {x.shape}")
-        print(f"Infinite elements: {torch.sum(torch.isinf(x)).item()}")
-        print(f"NaN elements: {torch.sum(torch.isnan(x)).item()}")
+            print(f"Output in training mode: {x[:10, :10, :10]}")
+        else:
+            print(f"Output in inference mode: {x[:, :10, :10]}")
+
 
         return x
     
-    def generate_sliding_window_causal_mask(self, sz: int, device: torch.device = torch.device('cpu')) -> torch.Tensor:
-        """Generate a square causal mask to limit attention to the last sliding_window_size tokens without loops.
+    # def generate_sliding_window_causal_mask(self, sz: int, device: torch.device = torch.device('cpu')) -> torch.Tensor:
+    #     """Generate a square causal mask to limit attention to the last sliding_window_size tokens without loops.
 
-        Args:
-            sz (int): Size of the sequence (and the square mask).
-            device (torch.device): The device on which to create the mask.
+    #     Args:
+    #         sz (int): Size of the sequence (and the square mask).
+    #         device (torch.device): The device on which to create the mask.
 
-        Returns:
-            torch.Tensor: The sliding window causal mask.
-        """
-        # Create a matrix where each element is its column index
-        cols = torch.arange(sz, device=device).repeat(sz, 1)
+    #     Returns:
+    #         torch.Tensor: The sliding window causal mask.
+    #     """
+    #     # Create a matrix where each element is its column index
+    #     cols = torch.arange(sz, device=device).repeat(sz, 1)
 
-        # Create a matrix where each element is its row index
-        rows = torch.arange(sz, device=device).unsqueeze(1).repeat(1, sz)
+    #     # Create a matrix where each element is its row index
+    #     rows = torch.arange(sz, device=device).unsqueeze(1).repeat(1, sz)
 
-        # Calculate the difference between each row and column. Mask should be zero if the difference is less than max_seq_len and more than or equal to 0
-        sliding_window_mask = (rows - cols).float()
+    #     # Calculate the difference between each row and column. Mask should be zero if the difference is less than max_seq_len and more than or equal to 0
+    #     sliding_window_mask = (rows - cols).float()
 
-        # Apply the conditions for the sliding window
-        mask = torch.where((sliding_window_mask >= 0) & (sliding_window_mask < self.sliding_window_size), 0., float('-inf'))
+    #     # Apply the conditions for the sliding window
+    #     mask = torch.where((sliding_window_mask >= 0) & (sliding_window_mask < self.sliding_window_size), 0., float('-inf'))
 
-        return mask
+    #     return mask
