@@ -23,9 +23,10 @@ class ActorCriticTransformer(ActorCritic):
         critic_hidden_dims=[256, 256, 256],
         activation="elu",
         sliding_window_size = 24,
-        d_model = 512,
-        transformer_num_heads=8,
-        transformer_num_layers=6,
+        d_model = 256,
+        d_ff = 1024,
+        transformer_num_heads=4,
+        transformer_num_layers=4,
         init_noise_std=1.0,
         **kwargs,
     ):
@@ -46,8 +47,8 @@ class ActorCriticTransformer(ActorCritic):
 
         activation = get_activation(activation)
 
-        self.memory_a = TransformerMemory(num_actor_obs, sliding_window_size, transformer_num_heads, transformer_num_layers, d_model)
-        self.memory_c = TransformerMemory(num_critic_obs, sliding_window_size, transformer_num_heads, transformer_num_layers, d_model)
+        self.memory_a = TransformerMemory(num_actor_obs, sliding_window_size, transformer_num_heads, transformer_num_layers, d_model, d_ff)
+        self.memory_c = TransformerMemory(num_critic_obs, sliding_window_size, transformer_num_heads, transformer_num_layers, d_model, d_ff)
 
         print(f"Actor Transformer: {self.memory_a}")
         print(f"Critic Transformer: {self.memory_c}")
@@ -91,7 +92,7 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 class TransformerMemory(nn.Module):
-    def __init__(self, input_dim, sliding_window_size, num_heads, num_layers, d_model, d_ff: int = 2048, dropout: float = 0.1):
+    def __init__(self, input_dim, sliding_window_size, num_heads, num_layers, d_model, d_ff: int = 1024, dropout: float = 0.1):
         super().__init__()
 
         self.sliding_window_size = sliding_window_size
@@ -110,7 +111,6 @@ class TransformerMemory(nn.Module):
             # Training mode
             # Padding mask should be (batch_size, seq_len), with True values for positions to ignore
             padding_masks = ~masks.t()
-            print(f"Number of paddings: {torch.sum(padding_masks).item()}")
         else:
             # Inference mode
             x = x.unsqueeze(0)  # Adjust for seq_len dimension in inference
@@ -134,9 +134,6 @@ class TransformerMemory(nn.Module):
         x = self.transformer_encoder(x, mask=causal_mask, src_key_padding_mask=padding_masks)   # (seq_len, batch_size, d_model)
         if padding_masks is not None:
             x = unpad_trajectories(x, masks)
-            print(f"Output in training mode: {x[:10, :10, :10]}")
-        else:
-            print(f"Output in inference mode: {x[:, :10, :10]}")
 
 
         return x
