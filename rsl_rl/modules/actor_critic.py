@@ -98,8 +98,10 @@ class ActorCritic(nn.Module):
 
     def update_distribution(self, observations):
         mean = self.actor(observations)
-        print(f"infinite elements mean: {torch.sum(torch.isinf(mean)).item()}")
-        print(f"infinite elements std: {torch.sum(torch.isinf(self.std)).item()}")
+        print(f"Infinite elements mean: {torch.sum(torch.isinf(mean)).item()}")
+        print(f"Infinite elements std: {torch.sum(torch.isinf(self.std)).item()}")
+        print(f"NaN elements std: {torch.sum(torch.isnan(self.std)).item()}")
+        print(f"NaN elements std: {torch.sum(torch.isnan(self.std)).item()}")
         self.distribution = Normal(mean, mean * 0.0 + self.std)
 
     def act(self, observations, **kwargs):

@@ -140,7 +140,8 @@ class TransformerMemory(nn.Module):
         if padding_masks is not None:
             x = unpad_trajectories(x, masks)
         print(f"Output size: {x.shape}")
-        print(f"infinite elements: {torch.sum(torch.isinf(x)).item()}")
+        print(f"Infinite elements: {torch.sum(torch.isinf(x)).item()}")
+        print(f"NaN elements: {torch.sum(torch.isnan(x)).item()}")
 
         return x
     
