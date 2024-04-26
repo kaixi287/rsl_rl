@@ -138,7 +138,8 @@ class TransformerMemory(nn.Module):
 
         # Pass through the transformer.
         x = self.transformer_encoder(x, mask=causal_mask, src_key_padding_mask=padding_masks)   # (seq_len, batch_size, d_model)
-        if padding_masks is not None:
+        # TODO: Check the output, how should it be mapped to action? (seq_len?)
+        if masks is not None:
             x = unpad_trajectories(x, masks)
 
         return x

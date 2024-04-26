@@ -85,13 +85,13 @@ class Memory(torch.nn.Module):
             if hidden_states is None:
                 raise ValueError("Hidden states not passed to memory module during policy update")
             out, _ = self.rnn(input, hidden_states)
+            print(f"RNN output shape before unpadding: {out.shape}")
+            print(f"RNN outputbefore unpadding: {out[:5, :5, :5]}")
             out = unpad_trajectories(out, masks)    # [24, 1024, 256]
-            print(f"Output in training mode: {out[:10, :10, :10]}")
 
         else:
             # inference mode (collection): use hidden states of last step
             out, self.hidden_states = self.rnn(input.unsqueeze(0), self.hidden_states)  # [1, 4096, 256]
-            print(f"Output in inference mode: {out[:, :10, :10]}")
 
         return out
 
