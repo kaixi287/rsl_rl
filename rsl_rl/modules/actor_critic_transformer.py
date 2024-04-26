@@ -104,6 +104,12 @@ class TransformerMemory(nn.Module):
                                                       dropout=dropout
                                                       )
         self.transformer_encoder = nn.TransformerEncoder(transformer_layer, num_layers)
+        self.initialize_transformer()
+    
+    def initialize_transformer(self):
+        for p in self.transformer_encoder.parameters():
+            if p.dim() > 1:  # Applies to weights of linear layers and not biases
+                nn.init.xavier_uniform_(p)
     
     def forward(self, x, masks=None):
 
@@ -134,7 +140,6 @@ class TransformerMemory(nn.Module):
         x = self.transformer_encoder(x, mask=causal_mask, src_key_padding_mask=padding_masks)   # (seq_len, batch_size, d_model)
         if padding_masks is not None:
             x = unpad_trajectories(x, masks)
-
 
         return x
     
