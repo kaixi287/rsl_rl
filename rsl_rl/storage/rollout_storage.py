@@ -167,7 +167,7 @@ class RolloutStorage:
                 ), None
 
     # for RNNs only
-    def reccurent_mini_batch_generator(self, num_mini_batches, method, num_epochs=8):
+    def reccurent_mini_batch_generator(self, num_mini_batches, num_epochs=8):
         padded_obs_trajectories, trajectory_masks = split_and_pad_trajectories(self.observations, self.dones)
         if self.privileged_observations is not None:
             padded_critic_obs_trajectories, _ = split_and_pad_trajectories(self.privileged_observations, self.dones)
@@ -203,7 +203,8 @@ class RolloutStorage:
                 hid_a_batch = None
                 hid_c_batch = None
 
-                if method == "rnn":
+                # rnn
+                if self.saved_hidden_states_a is not None:
                     # reshape to [num_envs, time, num layers, hidden dim] (original shape: [time, num_layers, num_envs, hidden_dim])
                     # then take only time steps after dones (flattens num envs and time dimensions),
                     # take a batch of trajectories and finally reshape back to [num_layers, batch, hidden_dim]

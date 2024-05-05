@@ -12,7 +12,7 @@ from rsl_rl.modules.actor_critic import ActorCritic, get_activation
 from rsl_rl.utils import unpad_trajectories
 
 class ActorCriticTransformer(ActorCritic):
-    method = "transformer"
+    model_name = "transformer"
 
     def __init__(
         self,
@@ -22,7 +22,6 @@ class ActorCriticTransformer(ActorCritic):
         actor_hidden_dims=[256, 256, 256],
         critic_hidden_dims=[256, 256, 256],
         activation="elu",
-        sliding_window_size = 24,
         d_model = 256,
         d_ff = 1024,
         transformer_num_heads=4,
@@ -34,6 +33,7 @@ class ActorCriticTransformer(ActorCritic):
             print(
                 "ActorCriticTransformer.__init__ got unexpected arguments, which will be ignored: " + str(kwargs.keys()),
             )
+        
 
         super().__init__(
             num_actor_obs=d_model,
@@ -47,8 +47,8 @@ class ActorCriticTransformer(ActorCritic):
 
         activation = get_activation(activation)
 
-        self.memory_a = TransformerMemory(num_actor_obs, sliding_window_size, transformer_num_heads, transformer_num_layers, d_model, d_ff)
-        self.memory_c = TransformerMemory(num_critic_obs, sliding_window_size, transformer_num_heads, transformer_num_layers, d_model, d_ff)
+        self.memory_a = TransformerMemory(num_actor_obs, transformer_num_heads, transformer_num_layers, d_model, d_ff)
+        self.memory_c = TransformerMemory(num_critic_obs, transformer_num_heads, transformer_num_layers, d_model, d_ff)
 
         print(f"Actor Transformer: {self.memory_a}")
         print(f"Critic Transformer: {self.memory_c}")
@@ -68,35 +68,53 @@ class ActorCriticTransformer(ActorCritic):
 
 class PositionalEncoding(nn.Module):
     
-    def __init__(self, d_model: int, dropout: float, max_len: int = 500) -> None:
+    def __init__(self, d_model: int, dropout: float, max_len: int = 100) -> None:
         super().__init__()
         self.d_model = d_model
         self.max_len = max_len
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(p=dropout)
         
-        # Create a matrix of shape (max_len, d_model)
-        pe = torch.zeros(max_len, d_model)
         # Create a vector of shape (max_len)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+
         # Apply the sin to even positions
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        
-        pe = pe.unsqueeze(1) # (max_len, 1, d_model)
-        
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
         self.register_buffer('pe', pe)
     
     def forward(self, x):
-        x = x + (self.pe[:x.shape[0], :]).requires_grad_(False)
+        x = x + (self.pe[:x.shape[0]])
         return self.dropout(x)
+    
+class ExtendedEmbedding(nn.Module):
+    def __init__(self, input_dim, d_model, activation=nn.ReLU(), intermediate_dim=None):
+        super(ExtendedEmbedding, self).__init__()
+        if intermediate_dim is None:
+            intermediate_dim = d_model  # Optionally set the intermediate dimension
+
+        # First linear layer maps from input_dim to intermediate_dim
+        self.linear1 = nn.Linear(input_dim, intermediate_dim)
+        
+        # Activation function, e.g., ReLU
+        self.activation = activation
+        
+        # Second linear layer maps from intermediate_dim to d_model
+        self.linear2 = nn.Linear(intermediate_dim, d_model)
+
+    def forward(self, x):
+        x = self.linear1(x)
+        x = self.activation(x)
+        x = self.linear2(x)
+        return x
 
 class TransformerMemory(nn.Module):
-    def __init__(self, input_dim, sliding_window_size, num_heads, num_layers, d_model, d_ff: int = 1024, dropout: float = 0.1):
+    def __init__(self, input_dim, num_heads, num_layers, d_model: int = 256, d_ff: int = 1024, dropout: float = 0.1):
         super().__init__()
 
-        self.sliding_window_size = sliding_window_size
         self.embedding = nn.Linear(input_dim, d_model)
+        # self.embedding = ExtendedEmbedding(input_dim, d_model, activation, d_embed)
         self.pos_encoder = PositionalEncoding(d_model, dropout)
         transformer_layer =nn.TransformerEncoderLayer(d_model=d_model,
                                                       nhead=num_heads,
@@ -104,7 +122,7 @@ class TransformerMemory(nn.Module):
                                                       dropout=dropout
                                                       )
         self.transformer_encoder = nn.TransformerEncoder(transformer_layer, num_layers)
-        self.initialize_transformer()
+        # self.initialize_transformer()
     
     def initialize_transformer(self):
         for p in self.transformer_encoder.parameters():
@@ -116,20 +134,16 @@ class TransformerMemory(nn.Module):
         if masks is not None:
             # Training mode
             # Padding mask should be (batch_size, seq_len), with True values for positions to ignore
-            padding_masks = ~masks.t()
+            padding_masks = torch.where(masks.t().float() == 0, torch.tensor(float('-inf'), device=x.device), torch.tensor(0.0, device=x.device))
         else:
             # Inference mode
-            x = x.unsqueeze(0)  # Adjust for seq_len dimension in inference
+            if x.dim() < 3:
+                x = x.unsqueeze(0)  # Adjust for seq_len dimension in inference
             padding_masks = None
         
         seq_len = x.size(0)
-        
-        # if seq_len > self.sliding_window_size:
-        #     # Generate a mask to limit attention to the last 'sliding_window_size' tokens
-        #     causal_mask = self.generate_sliding_window_causal_mask(seq_len, device=x.device)
-        # else:
 
-        # Standard causal mask since the sequence length is within the window
+        # Generate a causal mask to limit attention to the preceding tokens
         causal_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=x.device)
 
         # Embed the input (seq_len, batch_size, num_obs) --> (seq_len, batch_size, d_model)
@@ -138,32 +152,11 @@ class TransformerMemory(nn.Module):
 
         # Pass through the transformer.
         x = self.transformer_encoder(x, mask=causal_mask, src_key_padding_mask=padding_masks)   # (seq_len, batch_size, d_model)
-        # TODO: Check the output, how should it be mapped to action? (seq_len?)
+        
         if masks is not None:
             x = unpad_trajectories(x, masks)
+        else:
+            x = x[-1]   # take only the last output in inference mode
+            # print(f"output x shape in inference mode: {x.shape}")   #(4096, 256)
 
         return x
-    
-    # def generate_sliding_window_causal_mask(self, sz: int, device: torch.device = torch.device('cpu')) -> torch.Tensor:
-    #     """Generate a square causal mask to limit attention to the last sliding_window_size tokens without loops.
-
-    #     Args:
-    #         sz (int): Size of the sequence (and the square mask).
-    #         device (torch.device): The device on which to create the mask.
-
-    #     Returns:
-    #         torch.Tensor: The sliding window causal mask.
-    #     """
-    #     # Create a matrix where each element is its column index
-    #     cols = torch.arange(sz, device=device).repeat(sz, 1)
-
-    #     # Create a matrix where each element is its row index
-    #     rows = torch.arange(sz, device=device).unsqueeze(1).repeat(1, sz)
-
-    #     # Calculate the difference between each row and column. Mask should be zero if the difference is less than max_seq_len and more than or equal to 0
-    #     sliding_window_mask = (rows - cols).float()
-
-    #     # Apply the conditions for the sliding window
-    #     mask = torch.where((sliding_window_mask >= 0) & (sliding_window_mask < self.sliding_window_size), 0., float('-inf'))
-
-    #     return mask

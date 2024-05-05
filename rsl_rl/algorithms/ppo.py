@@ -67,7 +67,7 @@ class PPO:
         self.actor_critic.train()
 
     def act(self, obs, critic_obs):
-        if self.actor_critic.method == "rnn":
+        if self.actor_critic.model_name == "rnn":
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
         # Compute the actions and values
         self.transition.actions = self.actor_critic.act(obs).detach()
@@ -76,8 +76,13 @@ class PPO:
         self.transition.action_mean = self.actor_critic.action_mean.detach()
         self.transition.action_sigma = self.actor_critic.action_std.detach()
         # need to record obs and critic_obs before env.step()
-        self.transition.observations = obs
-        self.transition.critic_observations = critic_obs
+        if self.actor_critic.model_name == 'transformer':
+            # record the most recent observation
+            self.transition.observations = obs[-1].squeeze(0)
+            self.transition.critic_observations = critic_obs[-1].squeeze(0)
+        else:
+            self.transition.observations = obs
+            self.transition.critic_observations = critic_obs
         return self.transition.actions
 
     def process_env_step(self, rewards, dones, infos):
@@ -101,10 +106,10 @@ class PPO:
     def update(self):
         mean_value_loss = 0
         mean_surrogate_loss = 0
-        if self.actor_critic.method == "vanilla":
+        if self.actor_critic.model_name == "mlp":
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         else:
-            generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.actor_critic.method, self.num_learning_epochs)
+            generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
             
         for (
             obs_batch,

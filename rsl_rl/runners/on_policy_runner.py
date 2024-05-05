@@ -36,6 +36,7 @@ class OnPolicyRunner:
         actor_critic: ActorCritic | ActorCriticRecurrent | ActorCriticTransformer = actor_critic_class(
             num_obs, num_critic_obs, self.env.num_actions, **self.policy_cfg
         ).to(self.device)
+        self.model_name = actor_critic.model_name
         alg_class = eval(self.alg_cfg.pop("class_name"))  # PPO
         self.alg: PPO = alg_class(actor_critic, device=self.device, **self.alg_cfg)
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
@@ -101,6 +102,18 @@ class OnPolicyRunner:
         cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
+        # If using transformer, initialize observation and action buffers for each environment
+        if self.model_name == 'transformer':
+            observation_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
+            critic_observation_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
+            # action_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
+
+            # Add initial observations
+            for env_idx in range(self.env.num_envs):
+                observation_buffers[env_idx].append(obs[env_idx])   # obs[env_idx]: (235)
+                critic_observation_buffers[env_idx].append(critic_obs[env_idx])
+                # action_buffers[env_idx].append(torch.zeros(self.env.num_actions))
+
         start_iter = self.current_learning_iteration
         tot_iter = start_iter + num_learning_iterations
         for it in range(start_iter, tot_iter):
@@ -108,7 +121,14 @@ class OnPolicyRunner:
             # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
-                    actions = self.alg.act(obs, critic_obs)
+                    if self.model_name == 'transformer':
+                        obs_seq = [torch.stack(list(prev_obs)) for prev_obs in observation_buffers]
+                        obs_seq = torch.stack(obs_seq).transpose(0, 1)  # Shape: [num_envs, steps, obs_size] --> [seq_len, num_envs, obs_size] = ([i + 1, 4096, 235])
+                        critic_obs_seq = [torch.stack(list(prev_critic_obs)) for prev_critic_obs in critic_observation_buffers]
+                        critic_obs_seq = torch.stack(critic_obs_seq).transpose(0, 1)  # Shape: [num_envs, steps, critic_obs_size] --> [seq_len, num_envs, critic_obs_size]
+                        actions = self.alg.act(obs_seq, critic_obs_seq)
+                    else:
+                        actions = self.alg.act(obs, critic_obs)
                     obs, rewards, dones, infos = self.env.step(actions)
                     obs = self.obs_normalizer(obs)
                     if "critic" in infos["observations"]:
@@ -121,6 +141,14 @@ class OnPolicyRunner:
                         rewards.to(self.device),
                         dones.to(self.device),
                     )
+
+                    if self.model_name == 'whatever':
+                        for env_idx in range(self.env.num_envs):
+                            observation_buffers[env_idx].append(obs[env_idx])
+                            critic_observation_buffers[env_idx].append(critic_obs[env_idx])
+                            # Replace last padding with action and pad for the current time step
+                            # action_buffers[env_idx][-1] = actions[env_idx]
+                            # action_buffers[env_idx].append(torch.zeros(self.env.num_actions))
                     self.alg.process_env_step(rewards, dones, infos)
 
                     if self.log_dir is not None:

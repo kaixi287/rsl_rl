@@ -11,7 +11,7 @@ from rsl_rl.utils import unpad_trajectories
 
 
 class ActorCriticRecurrent(ActorCritic):
-    method = "rnn"
+    model_name = "rnn"
 
     def __init__(
         self,
@@ -85,8 +85,6 @@ class Memory(torch.nn.Module):
             if hidden_states is None:
                 raise ValueError("Hidden states not passed to memory module during policy update")
             out, _ = self.rnn(input, hidden_states)
-            print(f"RNN output shape before unpadding: {out.shape}")
-            print(f"RNN outputbefore unpadding: {out[:5, :5, :5]}")
             out = unpad_trajectories(out, masks)    # [24, 1024, 256]
 
         else:

@@ -10,7 +10,7 @@ from torch.distributions import Normal
 
 
 class ActorCritic(nn.Module):
-    method = "vanilla"
+    model_name = "mlp"
 
     def __init__(
         self,
