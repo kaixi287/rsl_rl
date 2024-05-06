@@ -142,7 +142,7 @@ class OnPolicyRunner:
                         dones.to(self.device),
                     )
 
-                    if self.model_name == 'whatever':
+                    if self.model_name == 'transformer':
                         for env_idx in range(self.env.num_envs):
                             observation_buffers[env_idx].append(obs[env_idx])
                             critic_observation_buffers[env_idx].append(critic_obs[env_idx])
@@ -172,7 +172,12 @@ class OnPolicyRunner:
 
                 # Learning step
                 start = stop
-                self.alg.compute_returns(critic_obs)
+                if self.model_name == 'transformer':
+                    critic_obs_seq = [torch.stack(list(prev_critic_obs)) for prev_critic_obs in critic_observation_buffers]
+                    critic_obs_seq = torch.stack(critic_obs_seq).transpose(0, 1)  # Shape: [num_envs, steps, critic_obs_size] --> [seq_len, num_envs, critic_obs_size]
+                    self.alg.compute_returns(critic_obs_seq)
+                else:
+                    self.alg.compute_returns(critic_obs)
 
             mean_value_loss, mean_surrogate_loss = self.alg.update()
             stop = time.time()

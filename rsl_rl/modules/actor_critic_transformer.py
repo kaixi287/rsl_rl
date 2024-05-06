@@ -128,7 +128,7 @@ class MultiHeadAttentionBlock(nn.Module):
         attention_scores = (query @ key.transpose(-2, -1)) / math.sqrt(d_k)
         if mask is not None:
             # Write a very low value (indicating -inf) to the positions where mask == 0
-            attention_scores.masked_fill_(~mask, float('-inf'))
+            attention_scores.masked_fill_(~mask.unsqueeze(1), float('-inf'))
         attention_scores = attention_scores.softmax(dim=-1) # (batch, h, seq_len, seq_len) # Apply softmax
         if dropout is not None:
             attention_scores = dropout(attention_scores)
@@ -142,9 +142,9 @@ class MultiHeadAttentionBlock(nn.Module):
         value = self.w_v(v) # (batch, seq_len, d_model) --> (batch, seq_len, d_model)
 
         # (batch, seq_len, d_model) --> (batch, seq_len, h, d_k) --> (batch, h, seq_len, d_k)
-        query = query.view(query.shape[0], query.shape[1], self.h, self.d_k).transpose(1, 2)
-        key = key.view(key.shape[0], key.shape[1], self.h, self.d_k).transpose(1, 2)
-        value = value.view(value.shape[0], value.shape[1], self.h, self.d_k).transpose(1, 2)
+        query = query.view(query.shape[0], query.shape[1], self.num_heads, self.d_k).transpose(1, 2)
+        key = key.view(key.shape[0], key.shape[1], self.num_heads, self.d_k).transpose(1, 2)
+        value = value.view(value.shape[0], value.shape[1], self.num_heads, self.d_k).transpose(1, 2)
 
         # Calculate attention
         x, self.attention_scores = MultiHeadAttentionBlock.attention(query, key, value, mask, self.dropout)
@@ -158,25 +158,28 @@ class MultiHeadAttentionBlock(nn.Module):
         return self.w_o(x)
 
 class PositionalEncoding(nn.Module):
-    
-    def __init__(self, d_model: int, dropout: float, max_len: int = 100) -> None:
+
+    def __init__(self, d_model: int, dropout: float, max_len: int = 50) -> None:
         super().__init__()
         self.d_model = d_model
-        self.max_len = max_len
-        self.dropout = nn.Dropout(p=dropout)
-        
-        # Create a vector of shape (max_len)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        self.dropout = nn.Dropout(dropout)
+        pe = torch.zeros(max_len, d_model)
 
-        # Apply the sin to even positions
-        pe = torch.zeros(max_len, 1, d_model)
-        pe[:, 0, 0::2] = torch.sin(position * div_term)
-        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        # Create a vector of shape (max_len)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1) # (max_len, 1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)) # (d_model / 2)
+
+        pe[:, 0::2] = torch.sin(position * div_term) # sin(position * (10000 ** (2i / d_model))
+        pe[:, 1::2] = torch.cos(position * div_term) # cos(position * (10000 ** (2i / d_model))
+
+        # Add a batch dimension to the positional encoding
+        pe = pe.unsqueeze(0) # (1, seq_len, d_model)
+
+        # Register the positional encoding as a buffer
         self.register_buffer('pe', pe)
-    
+
     def forward(self, x):
-        x = x + (self.pe[:x.shape[0]])
+        x = x + (self.pe[:, :x.shape[1], :]).requires_grad_(False) # (batch, seq_len, d_model)
         return self.dropout(x)
     
 class ExtendedEmbedding(nn.Module):
@@ -254,36 +257,32 @@ class TransformerMemory(nn.Module):
     
     def forward(self, x, masks=None):
 
+        x = x.transpose(0, 1) # (seq_len, batch, num_obs) --> (batch, seq_len, num_obs)
+        seq_len = x.size(1)
+
+        # Generate a causal mask to limit attention to the preceding tokens
+        encoder_mask = self.generate_causal_mask(seq_len).to(x.device)   # (1, seq_len, seq_len)
+
         if masks is not None:
             # Training mode
-            x = x.transpose(0, 1) # (seq_len, batch_size, num_obs) --> (batch_size, seq_len, num_obs)
-            seq_len = x.size(1)
-            # Padding mask (seq_len, batch_size) --> (batch_size, seq_len), with False values for padded positions
-            padding_mask = masks.t()
-            # Unsqueeze and expand to match the dimensions of the causal mask
-            padding_mask = padding_mask.unsqueeze(1)  # Add a singleton dimension for head
-            padding_mask = padding_mask.expand(-1, seq_len, -1)  # Expand across the seq_len dimension
-        else:
-            # Inference mode
-            if x.dim() < 3:
-                x = x.unsqueeze(1)  # Adjust for seq_len dimension in inference
-            seq_len = x.size(1)
-            padding_mask = None
-        
-        # Generate a causal mask to limit attention to the preceding tokens
-        causal_mask = self.generate_causal_mask(seq_len).to(x.device)   # (1, seq_len, seq_len)
+            # Padding mask (seq_len, batch) --> (batch, 1, seq_len), with False values for padded positions
+            padding_mask = masks.t().unsqueeze(1)  # Add a singleton dimension for head
+            padding_mask = padding_mask.expand(-1, seq_len, -1)  # Expand across the seq_len dimension (batch, seq_len, seq_len)
 
-        # Embed the input (seq_len, batch_size, num_obs) --> (seq_len, batch_size, d_model)
+            # Combine two masks
+            encoder_mask = encoder_mask & padding_mask
+
+        # Embed the input (batch, seq_len, num_obs) --> (batch, seq_len, d_model)
         x = self.embedding(x)
-        x = self.pos_encoder(x) # (seq_len, batch_size, d_model)
+        x = self.pos_encoder(x) # (batch, seq_len, d_model)
 
         # Pass through the transformer.
-        x = self.transformer_encoder(x, mask=(padding_mask & causal_mask))   # (seq_len, batch_size, d_model)
+        x = self.transformer_encoder(x, mask=encoder_mask)   # (batch, seq_len, d_model)
+        x = x.transpose(0, 1) # (batch, seq_len, d_model) --> (seq_len, batch, d_model)
         
         if masks is not None:
             x = unpad_trajectories(x, masks)
         else:
             x = x[-1]   # take only the last output in inference mode
-            # print(f"output x shape in inference mode: {x.shape}")   #(4096, 256)
 
         return x
