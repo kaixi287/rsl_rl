@@ -261,23 +261,14 @@ class TransformerMemory(nn.Module):
         seq_len = x.size(1)
 
         # Generate a causal mask to limit attention to the preceding tokens
-        encoder_mask = self.generate_causal_mask(seq_len).to(x.device)   # (1, seq_len, seq_len)
-
-        if masks is not None:
-            # Training mode
-            # Padding mask (seq_len, batch) --> (batch, 1, seq_len), with False values for padded positions
-            padding_mask = masks.t().unsqueeze(1)  # Add a singleton dimension for head
-            padding_mask = padding_mask.expand(-1, seq_len, -1)  # Expand across the seq_len dimension (batch, seq_len, seq_len)
-
-            # Combine two masks
-            encoder_mask = encoder_mask & padding_mask
+        causal_mask = self.generate_causal_mask(seq_len).to(x.device)   # (1, seq_len, seq_len)
 
         # Embed the input (batch, seq_len, num_obs) --> (batch, seq_len, d_model)
         x = self.embedding(x)
         x = self.pos_encoder(x) # (batch, seq_len, d_model)
 
         # Pass through the transformer.
-        x = self.transformer_encoder(x, mask=encoder_mask)   # (batch, seq_len, d_model)
+        x = self.transformer_encoder(x, mask=causal_mask)   # (batch, seq_len, d_model)
         x = x.transpose(0, 1) # (batch, seq_len, d_model) --> (seq_len, batch, d_model)
         
         if masks is not None:
