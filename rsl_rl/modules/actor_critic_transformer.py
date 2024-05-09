@@ -131,15 +131,8 @@ class TransformerMemory(nn.Module):
     
     def forward(self, x, masks=None):
 
-        if masks is not None:
-            # Training mode
-            # Padding mask should be (batch_size, seq_len), with True values for positions to ignore
-            padding_masks = torch.where(masks.t().float() == 0, torch.tensor(float('-inf'), device=x.device), torch.tensor(0.0, device=x.device))
-        else:
-            # Inference mode
-            if x.dim() < 3:
-                x = x.unsqueeze(0)  # Adjust for seq_len dimension in inference
-            padding_masks = None
+        if x.dim() < 3:
+            x = x.unsqueeze(0)  # Adjust for seq_len dimension in inference
         
         seq_len = x.size(0)
 
@@ -151,7 +144,7 @@ class TransformerMemory(nn.Module):
         x = self.pos_encoder(x) # (seq_len, batch_size, d_model)
 
         # Pass through the transformer.
-        x = self.transformer_encoder(x, mask=causal_mask, src_key_padding_mask=padding_masks)   # (seq_len, batch_size, d_model)
+        x = self.transformer_encoder(x, mask=causal_mask)   # (seq_len, batch_size, d_model)
         
         if masks is not None:
             x = unpad_trajectories(x, masks)
