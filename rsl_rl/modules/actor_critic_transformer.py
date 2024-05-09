@@ -36,8 +36,8 @@ class ActorCriticTransformer(ActorCritic):
         
 
         super().__init__(
-            num_actor_obs=d_model,
-            num_critic_obs=d_model,
+            num_actor_obs=num_actor_obs,
+            num_critic_obs=num_critic_obs,
             num_actions=num_actions,
             actor_hidden_dims=actor_hidden_dims,
             critic_hidden_dims=critic_hidden_dims,
@@ -47,242 +47,372 @@ class ActorCriticTransformer(ActorCritic):
 
         activation = get_activation(activation)
 
-        self.memory_a = TransformerMemory(num_actor_obs, transformer_num_heads, transformer_num_layers, d_model, d_ff)
-        self.memory_c = TransformerMemory(num_critic_obs, transformer_num_heads, transformer_num_layers, d_model, d_ff)
+        self.memory_a = StableTransformerXL(num_actor_obs, transformer_num_layers, transformer_num_heads, d_model, d_ff)
+        self.memory_c = StableTransformerXL(num_critic_obs, transformer_num_layers, transformer_num_heads, d_model, d_ff)
+
+        self.memory_act = None
+        self.memory_act_inference = None
+        self.memory_eval = None
 
         print(f"Actor Transformer: {self.memory_a}")
         print(f"Critic Transformer: {self.memory_c}")
 
     def act(self, observations, masks=None, **kwargs):
-        input_a = self.memory_a(observations, masks)
+        input_a = self.memory_a(observations, self.memory_act, masks)
+        input_a, self.memory_act = input_a['logits'], input_a['memory']
         return super().act(input_a.squeeze(0))
 
     def act_inference(self, observations):
-        input_a = self.memory_a(observations)
+        input_a = self.memory_a(observations)['logits']
         return super().act_inference(input_a.squeeze(0))
 
     def evaluate(self, critic_observations, masks=None, **kwargs):
-        input_c = self.memory_c(critic_observations, masks)
+        input_c = self.memory_c(critic_observations, self.memory_eval, masks)
+        input_c, self.memory_eval = input_c['logits'], input_c['memory']
         return super().evaluate(input_c.squeeze(0))
-
-class LayerNormalization(nn.Module):
-
-    def __init__(self, features: int, eps:float=10**-6) -> None:
-        super().__init__()
-        self.eps = eps
-        self.alpha = nn.Parameter(torch.ones(features)) # alpha is a learnable parameter
-        self.bias = nn.Parameter(torch.zeros(features)) # bias is a learnable parameter
-
-    def forward(self, x):
-        # x: (batch, seq_len, hidden_size)
-         # Keep the dimension for broadcasting
-        mean = x.mean(dim = -1, keepdim = True) # (batch, seq_len, 1)
-        # Keep the dimension for broadcasting
-        std = x.std(dim = -1, keepdim = True) # (batch, seq_len, 1)
-        # eps is to prevent dividing by zero or when std is very small
-        return self.alpha * (x - mean) / (std + self.eps) + self.bias
-
-class ResidualConnection(nn.Module):
     
-        def __init__(self, features: int, dropout: float) -> None:
-            super().__init__()
-            self.dropout = nn.Dropout(dropout)
-            self.norm = LayerNormalization(features)
+    def init_memory_act(self, device=torch.device("cpu")):
+        self.memory_act = self.memory_a.init_memory(device)
     
-        def forward(self, x, sublayer):
-            return x + self.dropout(sublayer(self.norm(x)))
-        
-class FeedForwardBlock(nn.Module):
+    def init_memory_eval(self, device=torch.device("cpu")):
+        self.memory_eval = self.memory_c.init_memory(device)
 
-    def __init__(self, d_model: int, d_ff: int, dropout: float) -> None:
-        super().__init__()
-        self.linear_1 = nn.Linear(d_model, d_ff) # w1 and b1
-        self.dropout = nn.Dropout(dropout)
-        self.linear_2 = nn.Linear(d_ff, d_model) # w2 and b2
+class PositionalEmbedding(torch.nn.Module):
+    def __init__(self, dim):
+        super(PositionalEmbedding, self).__init__()
 
-    def forward(self, x):
-        # (batch, seq_len, d_model) --> (batch, seq_len, d_ff) --> (batch, seq_len, d_model)
-        return self.linear_2(self.dropout(torch.relu(self.linear_1(x))))
+        self.dim = dim
+        inv_freq = 1 / (10000 ** (torch.arange(0.0, dim, 2.0) / dim))
+        self.register_buffer("inv_freq", inv_freq)
 
-class MultiHeadAttentionBlock(nn.Module):
+    def forward(self, positions):
+        sinusoid_inp = torch.einsum("i,j->ij", positions.float(), self.inv_freq)
+        pos_emb = torch.cat([sinusoid_inp.sin(), sinusoid_inp.cos()], dim=-1)
+        return pos_emb[:, None, :]
 
-    def __init__(self, d_model: int, num_heads: int, dropout: float) -> None:
-        super().__init__()
-        self.d_model = d_model # Embedding vector size
-        self.num_heads = num_heads
-        # Make sure d_model is divisible by num_heads
-        assert d_model % num_heads == 0, "d_model is not divisible by num_heads"
 
-        self.d_k = d_model // num_heads # Dimension of vector seen by each head
-        self.w_q = nn.Linear(d_model, d_model, bias=False) # Wq
-        self.w_k = nn.Linear(d_model, d_model, bias=False) # Wk
-        self.w_v = nn.Linear(d_model, d_model, bias=False) # Wv
-        self.w_o = nn.Linear(d_model, d_model, bias=False) # Wo
-        self.dropout = nn.Dropout(dropout)
+class PositionwiseFF(torch.nn.Module):
+    def __init__(self, d_input, d_inner, dropout):
+        super(PositionwiseFF, self).__init__()
 
-    @staticmethod
-    def attention(query, key, value, mask, dropout: nn.Dropout):
-        d_k = query.shape[-1]
-        # Just apply the formula from the paper
-        # (batch, h, seq_len, d_k) --> (batch, h, seq_len, seq_len)
-        attention_scores = (query @ key.transpose(-2, -1)) / math.sqrt(d_k)
-        if mask is not None:
-            # Write a very low value (indicating -inf) to the positions where mask == 0
-            attention_scores.masked_fill_(~mask.unsqueeze(1), float('-inf'))
-        attention_scores = attention_scores.softmax(dim=-1) # (batch, h, seq_len, seq_len) # Apply softmax
-        if dropout is not None:
-            attention_scores = dropout(attention_scores)
-        # (batch, h, seq_len, seq_len) --> (batch, h, seq_len, d_k)
-        # return attention scores which can be used for visualization
-        return (attention_scores @ value), attention_scores
-    
-    def forward(self, q, k, v, mask):
-        query = self.w_q(q) # (batch, seq_len, d_model) --> (batch, seq_len, d_model)
-        key = self.w_k(k) # (batch, seq_len, d_model) --> (batch, seq_len, d_model)
-        value = self.w_v(v) # (batch, seq_len, d_model) --> (batch, seq_len, d_model)
+        self.d_input = d_input
+        self.d_inner = d_inner
+        self.dropout = dropout
+        self.ff = torch.nn.Sequential(
+            torch.nn.Linear(d_input, d_inner),
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Dropout(dropout),
+            torch.nn.Linear(d_inner, d_input),
+            torch.nn.Dropout(dropout),
+        )
 
-        # (batch, seq_len, d_model) --> (batch, seq_len, h, d_k) --> (batch, h, seq_len, d_k)
-        query = query.view(query.shape[0], query.shape[1], self.num_heads, self.d_k).transpose(1, 2)
-        key = key.view(key.shape[0], key.shape[1], self.num_heads, self.d_k).transpose(1, 2)
-        value = value.view(value.shape[0], value.shape[1], self.num_heads, self.d_k).transpose(1, 2)
+    def forward(self, input_):
+        ff_out = self.ff(input_)
+        return ff_out
 
-        # Calculate attention
-        x, self.attention_scores = MultiHeadAttentionBlock.attention(query, key, value, mask, self.dropout)
-        
-        # Combine all the heads together
-        # (batch, h, seq_len, d_k) --> (batch, seq_len, h, d_k) --> (batch, seq_len, d_model)
-        x = x.transpose(1, 2).contiguous().view(x.shape[0], -1, self.num_heads * self.d_k)
 
-        # Multiply by Wo
-        # (batch, seq_len, d_model) --> (batch, seq_len, d_model)  
-        return self.w_o(x)
+class GatingMechanism(torch.nn.Module):
+    def __init__(self, d_input, bg=0.1):
+        super(GatingMechanism, self).__init__()
+        self.Wr = torch.nn.Linear(d_input, d_input)
+        self.Ur = torch.nn.Linear(d_input, d_input)
+        self.Wz = torch.nn.Linear(d_input, d_input)
+        self.Uz = torch.nn.Linear(d_input, d_input)
+        self.Wg = torch.nn.Linear(d_input, d_input)
+        self.Ug = torch.nn.Linear(d_input, d_input)
+        self.bg = bg
 
-class PositionalEncoding(nn.Module):
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
 
-    def __init__(self, d_model: int, dropout: float, max_len: int = 50) -> None:
-        super().__init__()
-        self.d_model = d_model
-        self.dropout = nn.Dropout(dropout)
-        pe = torch.zeros(max_len, d_model)
+    def forward(self, x, y):
+        r = self.sigmoid(self.Wr(y) + self.Ur(x))
+        z = self.sigmoid(self.Wz(y) + self.Uz(x) - self.bg)
+        h = self.tanh(self.Wg(y) + self.Ug(torch.mul(r, x)))
+        g = torch.mul(1 - z, x) + torch.mul(z, h)
+        return g
 
-        # Create a vector of shape (max_len)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1) # (max_len, 1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)) # (d_model / 2)
 
-        pe[:, 0::2] = torch.sin(position * div_term) # sin(position * (10000 ** (2i / d_model))
-        pe[:, 1::2] = torch.cos(position * div_term) # cos(position * (10000 ** (2i / d_model))
+class MultiHeadAttentionXL(torch.nn.Module):
+    def __init__(self, d_input, d_inner, n_heads=4, dropout=0.1, dropouta=0.0):
+        super(MultiHeadAttentionXL, self).__init__()
 
-        # Add a batch dimension to the positional encoding
-        pe = pe.unsqueeze(0) # (1, seq_len, d_model)
+        self.d_input = d_input
+        self.d_inner = d_inner
+        self.n_heads = n_heads
 
-        # Register the positional encoding as a buffer
-        self.register_buffer('pe', pe)
+        # Linear transformation for keys & values for all heads at once for efficiency.
+        # 2 for keys & values.
+        self.linear_kv = torch.nn.Linear(d_input, (d_inner * n_heads * 2), bias=False)
+        # for queries (will not be concatenated with memorized states so separate).
+        self.linear_q = torch.nn.Linear(d_input, d_inner * n_heads, bias=False)
 
-    def forward(self, x):
-        x = x + (self.pe[:, :x.shape[1], :]).requires_grad_(False) # (batch, seq_len, d_model)
-        return self.dropout(x)
-    
-class ExtendedEmbedding(nn.Module):
-    def __init__(self, input_dim, d_model, activation=nn.ReLU(), intermediate_dim=None):
-        super(ExtendedEmbedding, self).__init__()
-        if intermediate_dim is None:
-            intermediate_dim = d_model  # Optionally set the intermediate dimension
+        # for positional embeddings.
+        self.linear_p = torch.nn.Linear(d_input, d_inner * n_heads, bias=False)
+        self.scale = 1 / (d_inner ** 0.5)  # for scaled dot product attention
+        self.dropa = torch.nn.Dropout(dropouta)
 
-        # First linear layer maps from input_dim to intermediate_dim
-        self.linear1 = nn.Linear(input_dim, intermediate_dim)
-        
-        # Activation function, e.g., ReLU
-        self.activation = activation
-        
-        # Second linear layer maps from intermediate_dim to d_model
-        self.linear2 = nn.Linear(intermediate_dim, d_model)
+        self.lout = torch.nn.Linear(d_inner * n_heads, d_input, bias=False)
+        self.dropo = torch.nn.Dropout(dropout)
 
-    def forward(self, x):
-        x = self.linear1(x)
-        x = self.activation(x)
-        x = self.linear2(x)
-        return x
+    def _rel_shift(self, x):
+        # x shape: [curr x curr+prev x B x n_heads] = [20 x 40 x 5 x 3]
+        zero_pad = torch.zeros(
+            (x.size(0), 1, *x.size()[2:]), device=x.device, dtype=x.dtype
+        )
+        return (
+            torch.cat([zero_pad, x], dim=1)
+            .view(x.size(1) + 1, x.size(0), *x.size()[2:])[1:]
+            .view_as(x)
+        )
 
-class EncoderBlock(nn.Module):
+    def forward(self, input_, pos_embs, memory, u, v, mask=None):
+        """
+        + pos_embs: positional embeddings passed separately to handle relative positions.
+        + Arguments
+            - input: torch.FloatTensor, shape - (seq, bs, self.d_input) = (20, 5, 8)
+            - pos_embs: torch.FloatTensor, shape - (seq + prev_seq, bs, self.d_input) = (40, 1, 8)
+            - memory: torch.FloatTensor, shape - (prev_seq, b, d_in) = (20, 5, 8)
+            - u: torch.FloatTensor, shape - (num_heads, inner_dim) = (3 x )
+            - v: torch.FloatTensor, shape - (num_heads, inner_dim)
+            - mask: torch.FloatTensor, Optional = (20, 40, 1)
 
-    def __init__(self, features: int, self_attention_block: MultiHeadAttentionBlock, feed_forward_block: FeedForwardBlock, dropout: float) -> None:
-        super().__init__()
-        self.self_attention_block = self_attention_block
-        self.feed_forward_block = feed_forward_block
-        self.residual_connections = nn.ModuleList([ResidualConnection(features, dropout) for _ in range(2)])
+        + Returns
+            - output: torch.FloatTensor, shape - (seq, bs, self.d_input)
 
-    def forward(self, x, src_mask):
-        x = self.residual_connections[0](x, lambda x: self.self_attention_block(x, x, x, src_mask))
-        x = self.residual_connections[1](x, self.feed_forward_block)
-        return x
-    
-class Encoder(nn.Module):
+        + symbols representing shape of the tensors
+            - cs: current sequence length, b: batch, H: no. of heads
+            - d: inner dimension, ps: previous sequence length
+        """
+        cur_seq = input_.shape[0]
+        prev_seq = memory.shape[0]
+        H, d = self.n_heads, self.d_inner
+        # concat memory across sequence dimension
+        # input_with_memory = [seq + prev_seq x B x d_input] = [40 x 5 x 8]
+        input_with_memory = torch.cat([memory, input_], dim=0)
 
-    def __init__(self, features: int, layers: nn.ModuleList) -> None:
-        super().__init__()
-        self.layers = layers
-        self.norm = LayerNormalization(features)
+        # k_tfmd, v_tfmd = [seq + prev_seq x B x n_heads.d_head_inner], [seq + prev_seq x B x n_heads.d_head_inner]
+        k_tfmd, v_tfmd = torch.chunk(
+            self.linear_kv(input_with_memory),
+            2,
+            dim=-1,
+        )
+        # q_tfmd = [seq x B x n_heads.d_head_inner] = [20 x 5 x 96]
+        q_tfmd = self.linear_q(input_)
 
-    def forward(self, x, mask):
-        for layer in self.layers:
-            x = layer(x, mask)
-        return self.norm(x)
+        _, bs, _ = q_tfmd.shape
+        assert bs == k_tfmd.shape[1]
 
-class TransformerMemory(nn.Module):
-    def __init__(self, input_dim, num_heads, num_layers, d_model: int = 256, d_ff: int = 1024, dropout: float = 0.1):
-        super().__init__()
+        # content_attn = [curr x curr+prev x B x n_heads] = [20 x 40 x 5 x 3]
+        content_attn = torch.einsum(
+            "ibhd,jbhd->ijbh",
+            (
+                (q_tfmd.view(cur_seq, bs, H, d) + u),
+                k_tfmd.view(cur_seq + prev_seq, bs, H, d),
+            ),
+        )
 
-        self.embedding = nn.Linear(input_dim, d_model)
-        # self.embedding = ExtendedEmbedding(input_dim, d_model, activation, d_embed)
-        self.pos_encoder = PositionalEncoding(d_model, dropout)
-        # Create the encoder blocks
-        encoder_blocks = []
-        for _ in range(num_layers):
-            encoder_self_attention_block = MultiHeadAttentionBlock(d_model, num_heads, dropout)
-            feed_forward_block = FeedForwardBlock(d_model, d_ff, dropout)
-            encoder_block = EncoderBlock(d_model, encoder_self_attention_block, feed_forward_block, dropout)
-            encoder_blocks.append(encoder_block)
-        
-        self.transformer_encoder = Encoder(d_model, nn.ModuleList(encoder_blocks))
-        # self.initialize_transformer()
-    
-    def initialize_transformer(self):
-        for p in self.transformer_encoder.parameters():
-            if p.dim() > 1:  # Applies to weights of linear layers and not biases
-                nn.init.xavier_uniform_(p)
-    
-    def generate_causal_mask(self, size):
-        mask = torch.triu(torch.ones((1, size, size)), diagonal=1).type(torch.int)
-        return mask == 0
-    
-    def forward(self, x, masks=None):
+        # p_tfmd: [seq + prev_seq x 1 x n_heads.d_head_inner] = [40 x 1 x 96]
+        p_tfmd = self.linear_p(pos_embs)
+        # position_attn = [curr x curr+prev x B x n_heads] = [20 x 40 x 5 x 3]
+        position_attn = torch.einsum(
+            "ibhd,jhd->ijbh",
+            (
+                (q_tfmd.view(cur_seq, bs, H, d) + v),
+                p_tfmd.view(cur_seq + prev_seq, H, d),
+            ),
+        )
 
-        x = x.transpose(0, 1) # (seq_len, batch, num_obs) --> (batch, seq_len, num_obs)
-        seq_len = x.size(1)
+        position_attn = self._rel_shift(position_attn)
+        # attn = [curr x curr+prev x B x n_heads] = [20 x 40 x 5 x 3]
+        attn = content_attn + position_attn
 
-        # Generate a causal mask to limit attention to the preceding tokens
-        encoder_mask = self.generate_causal_mask(seq_len).to(x.device)   # (1, seq_len, seq_len)
+        if mask is not None and mask.any().item():
+            # fills float('-inf') where mask is True.
+            attn = attn.masked_fill(mask[..., None], -float("inf"))
+        # rescale to prevent values from exploding.
+        # normalize across the value sequence dimension.
+        attn = torch.softmax(attn * self.scale, dim=1)
+        # attn = [curr x curr+prev x B x n_heads] = [20 x 40 x 5 x 3]
+        attn = self.dropa(attn)
+
+        # attn_weighted_values = [curr x B x n_heads.d_inner] = [20 x 5 x 96]
+        attn_weighted_values = (
+            torch.einsum(
+                "ijbh,jbhd->ibhd",
+                (
+                    attn,  # (cs, cs + ps, b, H)
+                    v_tfmd.view(cur_seq + prev_seq, bs, H, d),  # (cs + ps, b, H, d)
+                ),
+            )  # (cs, b, H, d)
+            .contiguous()  # we need to change the memory layout to make `view` work
+            .view(cur_seq, bs, H * d)
+        )  # (cs, b, H * d)
+
+        # output = [curr x B x d_input] = [20 x 5 x 8]
+        output = self.dropo(self.lout(attn_weighted_values))
+        return output
+
+
+class StableTransformerEncoderLayerXL(torch.nn.Module):
+    def __init__(
+        self,
+        n_heads,
+        d_input,
+        d_head_inner,
+        d_ff_inner,
+        dropout,
+        gating=True,
+        dropouta=0.0,
+    ):
+        super(StableTransformerEncoderLayerXL, self).__init__()
+
+        self.gating = gating
+        self.gate1 = GatingMechanism(d_input)
+        self.gate2 = GatingMechanism(d_input)
+        self.mha = MultiHeadAttentionXL(
+            d_input,
+            d_head_inner,
+            n_heads=n_heads,
+            dropout=dropout,
+            dropouta=dropouta,
+        )
+        self.ff = PositionwiseFF(d_input, d_ff_inner, dropout)
+        self.norm1 = torch.nn.LayerNorm(d_input)
+        self.norm2 = torch.nn.LayerNorm(d_input)
+
+    def forward(self, input_, pos_embs, u, v, mask=None, mems=None):
+        src2 = self.norm1(input_)
+        src2 = self.mha(src2, pos_embs, mems, u, v, mask=mask)
+        src = self.gate1(input_, src2) if self.gating else input_ + src2
+        src2 = self.ff(self.norm2(src))
+        src = self.gate2(src, src2) if self.gating else src + src2
+        return src
+
+
+class StableTransformerXL(torch.nn.Module):
+    def __init__(
+        self,
+        d_input,
+        n_layers,
+        n_heads,
+        d_head_inner,   # d_model
+        d_ff_inner,
+        dropout=0.1,
+        dropouta=0.0,
+        mem_len=100,
+    ):
+        super(StableTransformerXL, self).__init__()
+
+        (
+            self.n_layers,
+            self.n_heads,
+            self.d_input,
+            self.d_head_inner,
+            self.d_ff_inner,
+        ) = (n_layers, n_heads, d_input, d_head_inner, d_ff_inner)
+
+        self.pos_embs = PositionalEmbedding(d_input)
+        self.drop = torch.nn.Dropout(dropout)
+        self.mem_len = mem_len
+        self.layers = torch.nn.ModuleList(
+            [
+                StableTransformerEncoderLayerXL(
+                    n_heads,
+                    d_input,
+                    d_head_inner=d_head_inner,
+                    d_ff_inner=d_ff_inner,
+                    dropout=dropout,
+                    dropouta=dropouta,
+                )
+                for _ in range(n_layers)
+            ]
+        )
+
+        # u and v are global parameters: maybe changing these to per-head parameters might help performance?
+        self.u, self.v = (
+            # [n_heads x d_head_inner] = [3 x 32]
+            torch.nn.Parameter(torch.zeros(self.n_heads, self.d_head_inner)),
+            torch.nn.Parameter(torch.zeros(self.n_heads, self.d_head_inner)),
+        )
+
+    def init_memory(self, device=torch.device("cpu")):
+        return [
+            torch.empty(0, dtype=torch.float).to(device)
+            for _ in range(self.n_layers + 1)
+        ]
+
+    def update_memory(self, previous_memory, hidden_states):
+        """
+        + Arguments
+            - previous_memory: List[torch.FloatTensor],
+            - hidden_states: List[torch.FloatTensor]
+        """
+        assert len(hidden_states) == len(previous_memory)
+        mem_len, seq_len = previous_memory[0].size(0), hidden_states[0].size(0)
+        # mem_len, seq_len = 3, hidden_states[0].size(0)
+        # print(mem_len, seq_len)
+
+        with torch.no_grad():
+            new_memory = []
+            end_idx = mem_len + seq_len
+            beg_idx = max(0, end_idx - self.mem_len)
+            for m, h in zip(previous_memory, hidden_states):
+                cat = torch.cat([m, h], dim=0)
+                new_memory.append(cat[beg_idx:end_idx].detach())
+        return new_memory
+
+    def forward(self, inputs, memory=None, masks=None):
+        """
+        + Arguments
+            - inputs - torch.FloatTensor = [seq_len x B x d_inner] = [20 x 5 x 8]
+            - memory - Optional, list[torch.FloatTensor] = [[T x B x d_inner] x 5]
+        """
+        if memory is None:
+            memory = self.init_memory(inputs.device)
+        assert len(memory) == len(self.layers) + 1
+
+        cur_seq, bs = inputs.shape[:2]
+        prev_seq = memory[0].size(0)
+
+        # dec_attn_mask = [curr x curr + prev x 1] = [20 x 40 x 1]
+        dec_attn_mask = (
+            torch.triu(
+                torch.ones((cur_seq, cur_seq + prev_seq)),
+                diagonal=1 + prev_seq,
+            )
+            .bool()[..., None]
+            .to(inputs.device)
+        )
+            
+        pos_ips = torch.arange(cur_seq + prev_seq - 1, -1, -1.0, dtype=torch.float).to(
+            inputs.device
+        )
+        # pos_embs = [curr + prev x 1 x d_input] = [40 x 1 x 8]
+        pos_embs = self.drop(self.pos_embs(pos_ips))
+        if self.d_input % 2 != 0:
+            pos_embs = pos_embs[:, :, :-1]
+
+        hidden_states = [inputs]
+        layer_out = inputs
+        for mem, layer in zip(memory, self.layers):
+            # layer_out = [curr x B x d_inner] = [20 x 5 x 8]
+            layer_out = layer(
+                layer_out,
+                pos_embs,
+                self.u,
+                self.v,
+                mask=dec_attn_mask,
+                mems=mem,
+            )
+            hidden_states.append(layer_out)
+
+        # Memory is treated as a const., don't propagate through it
+        # new_memory = [[T x B x d_inner] x 4]
+        memory = self.update_memory(memory, hidden_states)
 
         if masks is not None:
-            # Training mode
-            # Padding mask (seq_len, batch) --> (batch, 1, seq_len), with False values for padded positions
-            padding_mask = masks.t().unsqueeze(1)  # Add a singleton dimension for head
-            padding_mask = padding_mask.expand(-1, seq_len, -1)  # Expand across the seq_len dimension (batch, seq_len, seq_len)
-
-            # Combine two masks
-            encoder_mask = encoder_mask & padding_mask
-
-        # Embed the input (batch, seq_len, num_obs) --> (batch, seq_len, d_model)
-        x = self.embedding(x)
-        x = self.pos_encoder(x) # (batch, seq_len, d_model)
-
-        # Pass through the transformer.
-        x = self.transformer_encoder(x, mask=encoder_mask)   # (batch, seq_len, d_model)
-        x = x.transpose(0, 1) # (batch, seq_len, d_model) --> (seq_len, batch, d_model)
-        
-        if masks is not None:
-            x = unpad_trajectories(x, masks)
+            out = unpad_trajectories(layer_out, masks)
         else:
-            x = x[-1]   # take only the last output in inference mode
-
-        return x
+            out = layer_out[-1]
+        return {"logits": out, "memory": memory}

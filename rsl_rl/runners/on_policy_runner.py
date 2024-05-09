@@ -120,6 +120,9 @@ class OnPolicyRunner:
             start = time.time()
             # Rollout
             with torch.inference_mode():
+                if self.model_name == 'transformer':
+                    self.alg.actor_critic.init_memory_act(self.device)
+                    self.alg.actor_critic.init_memory_eval(self.device)
                 for i in range(self.num_steps_per_env):
                     if self.model_name == 'transformer':
                         obs_seq = [torch.stack(list(prev_obs)) for prev_obs in observation_buffers]
