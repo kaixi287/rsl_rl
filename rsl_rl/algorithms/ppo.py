@@ -66,20 +66,26 @@ class PPO:
     def train_mode(self):
         self.actor_critic.train()
 
-    def act(self, obs, critic_obs):
+    def act(self, obs, critic_obs, actions=None):
         if self.actor_critic.model_name == "rnn":
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
         # Compute the actions and values
-        self.transition.actions = self.actor_critic.act(obs).detach()
-        self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
+        if self.actor_critic.model_name == 'transformer' and actions is not None:
+            obs_act = torch.cat((obs, actions), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
+            critic_obs_act = torch.cat((critic_obs, actions), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
+            self.transition.actions = self.actor_critic.act(obs_act).detach()
+            self.transition.values = self.actor_critic.evaluate(critic_obs_act).detach()
+        else:
+            self.transition.actions = self.actor_critic.act(obs).detach()
+            self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
         self.transition.actions_log_prob = self.actor_critic.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.actor_critic.action_mean.detach()
         self.transition.action_sigma = self.actor_critic.action_std.detach()
         # need to record obs and critic_obs before env.step()
         if self.actor_critic.model_name == 'transformer':
             # record the most recent observation
-            self.transition.observations = obs[-1].squeeze(0)
-            self.transition.critic_observations = critic_obs[-1].squeeze(0)
+            self.transition.observations = obs_act[-1].squeeze(0)
+            self.transition.critic_observations = critic_obs_act[-1].squeeze(0)
         else:
             self.transition.observations = obs
             self.transition.critic_observations = critic_obs
@@ -130,8 +136,7 @@ class PPO:
                 self.actor_critic.init_memory_eval(self.device)
             self.actor_critic.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
             actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
-            value_batch = self.actor_critic.evaluate(
-                critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1]
+            value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1]
             )
             mu_batch = self.actor_critic.action_mean
             sigma_batch = self.actor_critic.action_std

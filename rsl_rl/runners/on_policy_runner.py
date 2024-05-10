@@ -49,6 +49,9 @@ class OnPolicyRunner:
             self.obs_normalizer = torch.nn.Identity()  # no normalization
             self.critic_obs_normalizer = torch.nn.Identity()  # no normalization
         # init storage and model
+        if self.model_name == 'transformer':
+            num_obs += self.env.num_actions
+            num_critic_obs += self.env.num_actions
         self.alg.init_storage(
             self.env.num_envs,
             self.num_steps_per_env,
@@ -106,13 +109,13 @@ class OnPolicyRunner:
         if self.model_name == 'transformer':
             observation_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
             critic_observation_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
-            # action_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
+            action_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
 
             # Add initial observations
             for env_idx in range(self.env.num_envs):
                 observation_buffers[env_idx].append(obs[env_idx])   # obs[env_idx]: (235)
                 critic_observation_buffers[env_idx].append(critic_obs[env_idx])
-                # action_buffers[env_idx].append(torch.zeros(self.env.num_actions))
+                action_buffers[env_idx].append(torch.zeros(self.env.num_actions).to(self.device))
 
         start_iter = self.current_learning_iteration
         tot_iter = start_iter + num_learning_iterations
@@ -120,6 +123,7 @@ class OnPolicyRunner:
             start = time.time()
             # Rollout
             with torch.inference_mode():
+                # Reset memory for each iteration
                 if self.model_name == 'transformer':
                     self.alg.actor_critic.init_memory_act(self.device)
                     self.alg.actor_critic.init_memory_eval(self.device)
@@ -129,7 +133,9 @@ class OnPolicyRunner:
                         obs_seq = torch.stack(obs_seq).transpose(0, 1)  # Shape: [num_envs, steps, obs_size] --> [seq_len, num_envs, obs_size] = ([i + 1, 4096, 235])
                         critic_obs_seq = [torch.stack(list(prev_critic_obs)) for prev_critic_obs in critic_observation_buffers]
                         critic_obs_seq = torch.stack(critic_obs_seq).transpose(0, 1)  # Shape: [num_envs, steps, critic_obs_size] --> [seq_len, num_envs, critic_obs_size]
-                        actions = self.alg.act(obs_seq, critic_obs_seq)
+                        action_seq = [torch.stack(list(prev_action)) for prev_action in action_buffers]
+                        action_seq = torch.stack(action_seq).transpose(0, 1)  # Shape: [num_envs, steps, obs_size] --> [seq_len, num_envs, obs_size] = ([i + 1, 4096, 235])
+                        actions = self.alg.act(obs_seq, critic_obs_seq, action_seq)
                     else:
                         actions = self.alg.act(obs, critic_obs)
                     obs, rewards, dones, infos = self.env.step(actions)
@@ -150,8 +156,8 @@ class OnPolicyRunner:
                             observation_buffers[env_idx].append(obs[env_idx])
                             critic_observation_buffers[env_idx].append(critic_obs[env_idx])
                             # Replace last padding with action and pad for the current time step
-                            # action_buffers[env_idx][-1] = actions[env_idx]
-                            # action_buffers[env_idx].append(torch.zeros(self.env.num_actions))
+                            action_buffers[env_idx][-1] = actions[env_idx]
+                            action_buffers[env_idx].append(torch.zeros(self.env.num_actions).to(self.device))
                     self.alg.process_env_step(rewards, dones, infos)
 
                     if self.log_dir is not None:
@@ -178,7 +184,10 @@ class OnPolicyRunner:
                 if self.model_name == 'transformer':
                     critic_obs_seq = [torch.stack(list(prev_critic_obs)) for prev_critic_obs in critic_observation_buffers]
                     critic_obs_seq = torch.stack(critic_obs_seq).transpose(0, 1)  # Shape: [num_envs, steps, critic_obs_size] --> [seq_len, num_envs, critic_obs_size]
-                    self.alg.compute_returns(critic_obs_seq)
+                    action_seq = [torch.stack(list(prev_action)) for prev_action in action_buffers]
+                    action_seq = torch.stack(action_seq).transpose(0, 1)  # Shape: [num_envs, steps, critic_obs_size] --> [seq_len, num_envs, critic_obs_size]
+                    critic_obs_act_seq = torch.cat((critic_obs_seq, action_seq), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
+                    self.alg.compute_returns(critic_obs_act_seq)
                 else:
                     self.alg.compute_returns(critic_obs)
 

@@ -36,8 +36,8 @@ class ActorCriticTransformer(ActorCritic):
         
 
         super().__init__(
-            num_actor_obs=num_actor_obs,
-            num_critic_obs=num_critic_obs,
+            num_actor_obs=num_actor_obs+num_actions,
+            num_critic_obs=num_critic_obs+num_actions,
             num_actions=num_actions,
             actor_hidden_dims=actor_hidden_dims,
             critic_hidden_dims=critic_hidden_dims,
@@ -47,8 +47,8 @@ class ActorCriticTransformer(ActorCritic):
 
         activation = get_activation(activation)
 
-        self.memory_a = StableTransformerXL(num_actor_obs, transformer_num_layers, transformer_num_heads, d_model, d_ff)
-        self.memory_c = StableTransformerXL(num_critic_obs, transformer_num_layers, transformer_num_heads, d_model, d_ff)
+        self.memory_a = StableTransformerXL(num_actor_obs+num_actions, transformer_num_layers, transformer_num_heads, d_model, d_ff, mem_len=2*(num_actor_obs+num_actions))
+        self.memory_c = StableTransformerXL(num_critic_obs+num_actions, transformer_num_layers, transformer_num_heads, d_model, d_ff, mem_len=2*(num_critic_obs+num_actions))
 
         self.memory_act = None
         self.memory_act_inference = None
