@@ -181,19 +181,12 @@ class RolloutStorage:
                 start = i * mini_batch_size
                 stop = (i + 1) * mini_batch_size
 
-                print(f"start: {start}")
-                print(f"stop: {stop}")
-                print(f"mini batch size: {mini_batch_size}")
-
                 dones = self.dones.squeeze(-1)
                 last_was_done = torch.zeros_like(dones, dtype=torch.bool)
                 last_was_done[1:] = dones[:-1]
                 last_was_done[0] = True
                 trajectories_batch_size = torch.sum(last_was_done[:, start:stop])
-                print(f"trajectories_batch_size: {trajectories_batch_size}")
                 last_traj = first_traj + trajectories_batch_size
-                print(f"first_traj: {first_traj}")
-                print(f"last_traj: {last_traj}")
 
                 masks_batch = trajectory_masks[:, first_traj:last_traj]
                 obs_batch = padded_obs_trajectories[:, first_traj:last_traj]
