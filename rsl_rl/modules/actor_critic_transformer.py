@@ -379,10 +379,8 @@ class StableTransformerXL(torch.nn.Module):
         # Iterate over each memory tensor corresponding to each layer
         for i in range(len(memory)):
             T, B, d_inner = memory[i].shape
-            # Create a zero tensor of the same shape as the memory slice for the batch
-            zero_slice = torch.zeros(T, 1, d_inner, device=device)
-            # Replace the slice corresponding to the batch_index with zero_slice
-            memory[i][:, batch_index:batch_index + 1, :] = zero_slice
+            # Replace the slice corresponding to the batch_index with empty tensors
+            memory[i][:, batch_index:batch_index + 1, :] = torch.zeros(T, 1, d_inner, device=device)
 
         return memory
 

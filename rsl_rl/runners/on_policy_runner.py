@@ -161,11 +161,8 @@ class OnPolicyRunner:
         tot_iter = start_iter + num_learning_iterations
         for it in range(start_iter, tot_iter):
             start = time.time()
-            # Rollout
+            # Rollout. Note that we don't need to reset memory for each iteration, only when environments are reset.
             with torch.inference_mode():
-                if self.model_name == 'transformer':
-                    # Reset memory for each iteration
-                    self.alg.actor_critic.init_memory(self.device)
                 for i in range(self.num_steps_per_env):
                     if self.model_name == 'transformer':
                         obs_seq, critic_obs_seq, action_seq = self.prepare_sequences()
