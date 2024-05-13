@@ -71,11 +71,13 @@ class ActorCriticTransformer(ActorCritic):
         input_c, self.memory_eval = input_c['logits'], input_c['memory']
         return super().evaluate(input_c.squeeze(0))
     
-    def init_memory_act(self, device=torch.device("cpu")):
+    def init_memory(self, device=torch.device("cpu")):
         self.memory_act = self.memory_a.init_memory(device)
-    
-    def init_memory_eval(self, device=torch.device("cpu")):
         self.memory_eval = self.memory_c.init_memory(device)
+
+    def reset_memory_for_batch(self, batch_index, device=torch.device("cpu")):
+        self.memory_act = self.memory_a.reset_memory_for_batch(self.memory_act, batch_index, device)
+        self.memory_eval = self.memory_c.reset_memory_for_batch(self.memory_eval, batch_index, device)
 
 class PositionalEmbedding(torch.nn.Module):
     def __init__(self, dim):
@@ -361,6 +363,28 @@ class StableTransformerXL(torch.nn.Module):
                 cat = torch.cat([m, h], dim=0)
                 new_memory.append(cat[beg_idx:end_idx].detach())
         return new_memory
+    
+    def reset_memory_for_batch(self, memory, batch_index, device=torch.device("cpu")):
+        """
+        Resets the memory for a specific batch index across all layers.
+
+        Args:
+        - memory (list of torch.Tensor): The memory to reset, each tensor with shape [T, B, d_inner].
+        - batch_index (int): The index of the batch to reset.
+        - device (torch.device): The device on which the memory tensors are stored.
+
+        Returns:
+        - modified_memory (list of torch.Tensor): The memory after resetting the specified batch.
+        """
+        # Iterate over each memory tensor corresponding to each layer
+        for i in range(len(memory)):
+            T, B, d_inner = memory[i].shape
+            # Create a zero tensor of the same shape as the memory slice for the batch
+            zero_slice = torch.zeros(T, 1, d_inner, device=device)
+            # Replace the slice corresponding to the batch_index with zero_slice
+            memory[i][:, batch_index:batch_index + 1, :] = zero_slice
+
+        return memory
 
     def forward(self, inputs, memory=None, masks=None):
         """
