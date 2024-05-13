@@ -36,8 +36,8 @@ class ActorCriticTransformer(ActorCritic):
         
 
         super().__init__(
-            num_actor_obs=d_model,
-            num_critic_obs=d_model,
+            num_actor_obs=num_actor_obs+num_actions,
+            num_critic_obs=num_actor_obs+num_actions,
             num_actions=num_actions,
             actor_hidden_dims=actor_hidden_dims,
             critic_hidden_dims=critic_hidden_dims,
@@ -113,10 +113,10 @@ class TransformerMemory(nn.Module):
     def __init__(self, input_dim, num_heads, num_layers, d_model: int = 256, d_ff: int = 1024, dropout: float = 0.1):
         super().__init__()
 
-        self.embedding = nn.Linear(input_dim, d_model)
+        # self.embedding = nn.Linear(input_dim, d_model)
         # self.embedding = ExtendedEmbedding(input_dim, d_model, activation, d_embed)
-        self.pos_encoder = PositionalEncoding(d_model, dropout)
-        transformer_layer =nn.TransformerEncoderLayer(d_model=d_model,
+        self.pos_encoder = PositionalEncoding(input_dim, dropout)
+        transformer_layer =nn.TransformerEncoderLayer(d_model=input_dim,
                                                       nhead=num_heads,
                                                       dim_feedforward=d_ff,
                                                       dropout=dropout
@@ -132,7 +132,7 @@ class TransformerMemory(nn.Module):
     def forward(self, x, masks=None):
 
         if x.dim() < 3:
-            x = x.unsqueeze(1)  # Adjust for batch size dimension in inference
+            x = x.unsqueeze(0)  # Adjust for seq_len dimension in inference
         
         seq_len = x.size(0)
 
@@ -140,7 +140,7 @@ class TransformerMemory(nn.Module):
         causal_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=x.device)
 
         # Embed the input (seq_len, batch_size, num_obs) --> (seq_len, batch_size, d_model)
-        x = self.embedding(x)
+        # x = self.embedding(x)
         x = self.pos_encoder(x) # (seq_len, batch_size, d_model)
 
         # Pass through the transformer.
