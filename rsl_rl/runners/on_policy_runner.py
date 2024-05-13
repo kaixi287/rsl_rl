@@ -150,7 +150,7 @@ class OnPolicyRunner:
         cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
-        # If using transformer, initialize observation and action buffers for each environment
+        # If using transformer, initialize observation and action buffers for all environments
         if self.model_name == 'transformer':
             for env_idx in range(self.env.num_envs):
                 self.reset_buffers(env_idx, obs, critic_obs)

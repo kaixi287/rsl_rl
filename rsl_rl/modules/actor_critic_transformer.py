@@ -47,8 +47,8 @@ class ActorCriticTransformer(ActorCritic):
 
         activation = get_activation(activation)
 
-        self.memory_a = TransformerMemory(num_actor_obs, transformer_num_heads, transformer_num_layers, d_model, d_ff)
-        self.memory_c = TransformerMemory(num_critic_obs, transformer_num_heads, transformer_num_layers, d_model, d_ff)
+        self.memory_a = TransformerMemory(num_actor_obs+num_actions, transformer_num_heads, transformer_num_layers, d_model, d_ff)
+        self.memory_c = TransformerMemory(num_critic_obs+num_actions, transformer_num_heads, transformer_num_layers, d_model, d_ff)
 
         print(f"Actor Transformer: {self.memory_a}")
         print(f"Critic Transformer: {self.memory_c}")
@@ -132,7 +132,7 @@ class TransformerMemory(nn.Module):
     def forward(self, x, masks=None):
 
         if x.dim() < 3:
-            x = x.unsqueeze(0)  # Adjust for seq_len dimension in inference
+            x = x.unsqueeze(1)  # Adjust for batch size dimension in inference
         
         seq_len = x.size(0)
 
