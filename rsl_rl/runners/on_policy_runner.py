@@ -154,6 +154,7 @@ class OnPolicyRunner:
         if self.model_name == 'transformer':
             for env_idx in range(self.env.num_envs):
                 self.reset_buffers(env_idx, obs, critic_obs)
+            self.update_buffers(obs, critic_obs)
 
         start_iter = self.current_learning_iteration
         tot_iter = start_iter + num_learning_iterations
