@@ -66,9 +66,13 @@ class PPO:
     def train_mode(self):
         self.actor_critic.train()
 
-    def act(self, obs, critic_obs):
+    def act(self, obs, critic_obs, actions=None):
         if self.actor_critic.model_name == "rnn":
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
+        if actions is not None:
+            # Concatenate observation with action
+            obs = torch.cat((obs, actions), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
+            critic_obs = torch.cat((critic_obs, actions), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
         # Compute the actions and values
         self.transition.actions = self.actor_critic.act(obs).detach()
         self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
@@ -76,7 +80,7 @@ class PPO:
         self.transition.action_mean = self.actor_critic.action_mean.detach()
         self.transition.action_sigma = self.actor_critic.action_std.detach()
         # need to record obs and critic_obs before env.step()
-        if self.actor_critic.model_name == 'transformer':
+        if actions is not None and obs.dim() > 2:
             # record the most recent observation
             self.transition.observations = obs[-1].squeeze(0)
             self.transition.critic_observations = critic_obs[-1].squeeze(0)
@@ -99,7 +103,9 @@ class PPO:
         self.transition.clear()
         self.actor_critic.reset(dones)
 
-    def compute_returns(self, last_critic_obs):
+    def compute_returns(self, last_critic_obs, actions=None):
+        if actions is not None:
+            last_critic_obs = torch.cat((last_critic_obs, actions), dim=-1)
         last_values = self.actor_critic.evaluate(last_critic_obs).detach()
         self.storage.compute_returns(last_values, self.gamma, self.lam)
 
