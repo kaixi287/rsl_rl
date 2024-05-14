@@ -66,16 +66,20 @@ class PPO:
     def train_mode(self):
         self.actor_critic.train()
 
-    def act(self, obs, critic_obs, actions=None):
+    def act(self, obs, critic_obs, actions=None, reset_masks=None):
         if self.actor_critic.model_name == "rnn":
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
         if actions is not None:
             # Concatenate observation with action
             obs = torch.cat((obs, actions), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
             critic_obs = torch.cat((critic_obs, actions), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
+        # if reset_masks is not None:
+        #     # Concatenate observation with masks
+        #     obs = torch.cat((obs, reset_masks), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
+        #     critic_obs = torch.cat((critic_obs, reset_masks), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
         # Compute the actions and values
-        self.transition.actions = self.actor_critic.act(obs).detach()
-        self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
+        self.transition.actions = self.actor_critic.act(obs, masks=None, reset_masks=reset_masks).detach()
+        self.transition.values = self.actor_critic.evaluate(critic_obs, masks=None, reset_masks=reset_masks).detach()
         self.transition.actions_log_prob = self.actor_critic.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.actor_critic.action_mean.detach()
         self.transition.action_sigma = self.actor_critic.action_std.detach()
@@ -103,10 +107,10 @@ class PPO:
         self.transition.clear()
         self.actor_critic.reset(dones)
 
-    def compute_returns(self, last_critic_obs, actions=None):
+    def compute_returns(self, last_critic_obs, actions=None, reset_masks=None):
         if actions is not None:
             last_critic_obs = torch.cat((last_critic_obs, actions), dim=-1)
-        last_values = self.actor_critic.evaluate(last_critic_obs).detach()
+        last_values = self.actor_critic.evaluate(last_critic_obs, masks=None, reset_masks=reset_masks).detach()
         self.storage.compute_returns(last_values, self.gamma, self.lam)
 
     def update(self):

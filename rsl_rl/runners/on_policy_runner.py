@@ -56,6 +56,7 @@ class OnPolicyRunner:
             self.observation_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
             self.critic_observation_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
             self.action_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
+            self.mask_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
 
         # init storage and model
         self.alg.init_storage(
@@ -78,20 +79,23 @@ class OnPolicyRunner:
         obs_seq = torch.stack([torch.stack(list(buf)) for buf in self.observation_buffers]).transpose(0, 1)
         critic_obs_seq = torch.stack([torch.stack(list(buf)) for buf in self.critic_observation_buffers]).transpose(0, 1)
         action_seq = torch.stack([torch.stack(list(buf)) for buf in self.action_buffers]).transpose(0, 1)
-
-        return obs_seq, critic_obs_seq, action_seq
+        mask_seq = torch.stack([torch.stack(list(buf)) for buf in self.mask_buffers]).transpose(0, 1)  # Ensure mask is float for multiplication purposes
+        # (seq_len, Batch, d)
+        return obs_seq, critic_obs_seq, action_seq, mask_seq
 
     def reset_buffers(self, env_idx, obs, critic_obs):
         # Clear buffers if the environment is done
         self.observation_buffers[env_idx].clear()
         self.critic_observation_buffers[env_idx].clear()
         self.action_buffers[env_idx].clear()
+        self.mask_buffers[env_idx].clear()
 
         # Initialize buffers with zeros
         for _ in range(self.num_steps_per_env):
             self.observation_buffers[env_idx].append(torch.zeros_like(obs[env_idx]))
             self.critic_observation_buffers[env_idx].append(torch.zeros_like(critic_obs[env_idx]))
-            self.action_buffers[env_idx].append(torch.zeros(self.env.num_actions).to(self.device))
+            self.action_buffers[env_idx].append(torch.zeros(self.env.num_actions, device=self.device))
+            self.mask_buffers[env_idx].append(torch.zeros(1, dtype=torch.int, device=self.device))  # Mask set to 0 for padding
 
 
     def update_buffers(self, obs, critic_obs, prev_actions=None, dones=None):
@@ -109,7 +113,8 @@ class OnPolicyRunner:
             # Append new observations and a placeholder for the new action
             self.observation_buffers[env_idx].append(obs[env_idx])
             self.critic_observation_buffers[env_idx].append(critic_obs[env_idx])
-            self.action_buffers[env_idx].append(torch.zeros(self.env.num_actions).to(self.device))
+            self.action_buffers[env_idx].append(torch.zeros(self.env.num_actions, device=self.device))
+            self.mask_buffers[env_idx].append(torch.ones(1, dtype=torch.int, device=self.device))  # Updating mask to 1 for real data
 
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):
@@ -163,8 +168,8 @@ class OnPolicyRunner:
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
                     if self.model_name == 'transformer':
-                        obs_seq, critic_obs_seq, action_seq = self.prepare_sequences()
-                        actions = self.alg.act(obs_seq, critic_obs_seq, action_seq)
+                        obs_seq, critic_obs_seq, action_seq, mask_seq = self.prepare_sequences()
+                        actions = self.alg.act(obs_seq, critic_obs_seq, action_seq, mask_seq)
                     else:
                         actions = self.alg.act(obs, critic_obs)
                     obs, rewards, dones, infos = self.env.step(actions)
@@ -207,8 +212,8 @@ class OnPolicyRunner:
                 # Learning step
                 start = stop
                 if self.model_name == 'transformer':
-                    _, critic_obs_seq, action_seq = self.prepare_sequences()
-                    self.alg.compute_returns(critic_obs_seq, action_seq)
+                    _, critic_obs_seq, action_seq, mask_seq = self.prepare_sequences()
+                    self.alg.compute_returns(critic_obs_seq, action_seq, mask_seq)
                 else:
                     self.alg.compute_returns(critic_obs)
 
