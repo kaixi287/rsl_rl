@@ -154,6 +154,9 @@ class OnPolicyRunner:
 
         # If using transformer, initialize observation and action buffers for each environment
         if self.model_name == 'transformer':
+            # Initialize memory
+            self.alg.actor_critic.init_memory(self.device)
+            # Initialize buffers
             for env_idx in range(self.env.num_envs):
                 self.reset_buffers(env_idx, obs, critic_obs)
 
@@ -161,12 +164,13 @@ class OnPolicyRunner:
         tot_iter = start_iter + num_learning_iterations
         for it in range(start_iter, tot_iter):
             start = time.time()
-            # Rollout. Note that we don't need to reset memory for each iteration, only when environments are reset.
+            # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
                     if self.model_name == 'transformer':
                         obs_seq, critic_obs_seq, action_seq = self.prepare_sequences()
-                        actions = self.alg.act(obs_seq, critic_obs_seq, action_seq)
+                        memory_act, memory_eval = self.alg.actor_critic.get_memory()
+                        actions = self.alg.act(obs_seq, critic_obs_seq, action_seq, memory_act, memory_eval)
                     else:
                         actions = self.alg.act(obs, critic_obs)
                     obs, rewards, dones, infos = self.env.step(actions)
@@ -210,7 +214,7 @@ class OnPolicyRunner:
                 start = stop
                 if self.model_name == 'transformer':
                     _, critic_obs_seq, action_seq = self.prepare_sequences()
-                    self.alg.compute_returns(critic_obs_seq, action_seq)
+                    self.alg.compute_returns(critic_obs_seq, action_seq, memory_eval)
                 else:
                     self.alg.compute_returns(critic_obs)
 

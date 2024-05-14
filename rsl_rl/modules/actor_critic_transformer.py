@@ -50,30 +50,40 @@ class ActorCriticTransformer(ActorCritic):
         self.memory_a = StableTransformerXL(num_actor_obs+num_actions, transformer_num_layers, transformer_num_heads, d_model, d_ff, mem_len=2*(num_actor_obs+num_actions))
         self.memory_c = StableTransformerXL(num_critic_obs+num_actions, transformer_num_layers, transformer_num_heads, d_model, d_ff, mem_len=2*(num_critic_obs+num_actions))
 
+        # Memory only used for roll-out
         self.memory_act = None
-        self.memory_act_inference = None
         self.memory_eval = None
+        # self.memory_act_inference = None
 
         print(f"Actor Transformer: {self.memory_a}")
         print(f"Critic Transformer: {self.memory_c}")
 
-    def act(self, observations, masks=None, **kwargs):
-        input_a = self.memory_a(observations, self.memory_act, masks)
-        input_a, self.memory_act = input_a['logits'], input_a['memory']
+    def act(self, observations, masks=None, memory=None, **kwargs):
+        output_a = self.memory_a(observations, memory, masks)
+        input_a = output_a['logits']
+        if memory is not None:
+            # Inference mode
+            self.memory_act = output_a['memory']
         return super().act(input_a.squeeze(0))
 
     def act_inference(self, observations):
         input_a = self.memory_a(observations)['logits']
         return super().act_inference(input_a.squeeze(0))
 
-    def evaluate(self, critic_observations, masks=None, **kwargs):
-        input_c = self.memory_c(critic_observations, self.memory_eval, masks)
-        input_c, self.memory_eval = input_c['logits'], input_c['memory']
+    def evaluate(self, critic_observations, masks=None, memory=None, **kwargs):
+        output_c = self.memory_c(critic_observations, memory, masks)
+        input_c = output_c['logits']
+        if memory is not None:
+            # Inference mode
+            self.memory_eval = output_c['memory']
         return super().evaluate(input_c.squeeze(0))
     
     def init_memory(self, device=torch.device("cpu")):
         self.memory_act = self.memory_a.init_memory(device)
         self.memory_eval = self.memory_c.init_memory(device)
+    
+    def get_memory(self):
+        return self.memory_act, self.memory_eval
 
     def reset_memory_for_batch(self, batch_index, device=torch.device("cpu")):
         self.memory_act = self.memory_a.reset_memory_for_batch(self.memory_act, batch_index, device)

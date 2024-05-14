@@ -66,7 +66,7 @@ class PPO:
     def train_mode(self):
         self.actor_critic.train()
 
-    def act(self, obs, critic_obs, actions=None):
+    def act(self, obs, critic_obs, actions=None, memory_act=None, memory_eval=None):
         if self.actor_critic.model_name == "rnn":
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
 
@@ -76,8 +76,8 @@ class PPO:
             critic_obs = torch.cat((critic_obs, actions), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
 
         # Compute the actions and values
-        self.transition.actions = self.actor_critic.act(obs).detach()
-        self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
+        self.transition.actions = self.actor_critic.act(obs, masks=None, memory=memory_act).detach()
+        self.transition.values = self.actor_critic.evaluate(critic_obs, masks=None, memory=memory_eval).detach()
         self.transition.actions_log_prob = self.actor_critic.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.actor_critic.action_mean.detach()
         self.transition.action_sigma = self.actor_critic.action_std.detach()
@@ -105,10 +105,10 @@ class PPO:
         self.transition.clear()
         self.actor_critic.reset(dones)
 
-    def compute_returns(self, last_critic_obs, actions=None):
+    def compute_returns(self, last_critic_obs, actions=None, memory_eval=None):
         if actions is not None:
             last_critic_obs = torch.cat((last_critic_obs, actions), dim=-1)
-        last_values = self.actor_critic.evaluate(last_critic_obs).detach()
+        last_values = self.actor_critic.evaluate(last_critic_obs, masks=None, memory=memory_eval).detach()
         self.storage.compute_returns(last_values, self.gamma, self.lam)
 
     def update(self):
@@ -132,9 +132,9 @@ class PPO:
             hid_states_batch,
             masks_batch,
         ) in generator:
-            if self.actor_critic.model_name == 'transformer':
-                # Reset memory for each batch
-                self.actor_critic.init_memory(self.device)
+            # if self.actor_critic.model_name == 'transformer':
+            #     # Reset memory for each batch
+            #     self.actor_critic.init_memory(self.device)
             self.actor_critic.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
             actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
             value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1]
