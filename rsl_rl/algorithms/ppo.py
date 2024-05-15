@@ -66,26 +66,29 @@ class PPO:
     def train_mode(self):
         self.actor_critic.train()
 
-    def act(self, obs, critic_obs, actions=None):
+    def act(self, obs, critic_obs, actions=None, reset_masks=None):
         if self.actor_critic.model_name == "rnn":
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
-        
         if actions is not None:
             # Concatenate observation with action
-            obs = torch.cat((obs, actions), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
-            critic_obs = torch.cat((critic_obs, actions), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
+            concatenated_obs = torch.cat((obs, actions), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
+            concatenated_critic_obs = torch.cat((critic_obs, actions), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
+            # Compute the actions and values using concatenated observation-actions
+            self.transition.actions = self.actor_critic.act(concatenated_obs, masks=None, reset_masks=reset_masks).detach()
+            self.transition.values = self.actor_critic.evaluate(concatenated_critic_obs, masks=None, reset_masks=reset_masks).detach()
+        else:
+            # Compute the actions and values using observations
+            self.transition.actions = self.actor_critic.act(obs, masks=None, reset_masks=reset_masks).detach()
+            self.transition.values = self.actor_critic.evaluate(critic_obs, masks=None, reset_masks=reset_masks).detach()
 
-        # Compute the actions and values
-        self.transition.actions = self.actor_critic.act(obs).detach()
-        self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
         self.transition.actions_log_prob = self.actor_critic.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.actor_critic.action_mean.detach()
         self.transition.action_sigma = self.actor_critic.action_std.detach()
         # need to record obs and critic_obs before env.step()
         if actions is not None and obs.dim() > 2:
             # record the most recent observation
-            self.transition.observations = obs[-1].squeeze(0)
-            self.transition.critic_observations = critic_obs[-1].squeeze(0)
+            self.transition.observations = torch.cat((obs[-1].squeeze(0), self.transition.actions), dim=-1)
+            self.transition.critic_observations = torch.cat((critic_obs[-1].squeeze(0), self.transition.actions), dim=-1)
         else:
             self.transition.observations = obs
             self.transition.critic_observations = critic_obs
