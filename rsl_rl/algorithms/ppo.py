@@ -73,10 +73,7 @@ class PPO:
             # Concatenate observation with action
             obs = torch.cat((obs, actions), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
             critic_obs = torch.cat((critic_obs, actions), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
-        # if reset_masks is not None:
-        #     # Concatenate observation with masks
-        #     obs = torch.cat((obs, reset_masks), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
-        #     critic_obs = torch.cat((critic_obs, reset_masks), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
+
         # Compute the actions and values
         self.transition.actions = self.actor_critic.act(obs, masks=None, reset_masks=reset_masks).detach()
         self.transition.values = self.actor_critic.evaluate(critic_obs, masks=None, reset_masks=reset_masks).detach()

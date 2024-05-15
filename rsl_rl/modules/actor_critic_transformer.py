@@ -252,8 +252,7 @@ class TransformerMemory(nn.Module):
                 nn.init.xavier_uniform_(p)
     
     def generate_causal_mask(self, size):
-        # mask = torch.triu(torch.ones((1, size, size)), diagonal=1).type(torch.int)
-        mask = torch.eye(size).type(torch.int).unsqueeze(0)
+        mask = torch.triu(torch.ones((1, size, size)), diagonal=1).type(torch.int)
         return mask == 0
     
     def forward(self, x, masks=None, reset_masks=None):
@@ -264,11 +263,11 @@ class TransformerMemory(nn.Module):
         # Generate a causal mask to limit attention to the preceding tokens
         causal_mask = self.generate_causal_mask(seq_len).to(x.device)   # (1, seq_len, seq_len)
 
-        # if reset_masks is not None:
-        #     # (seq_len, batch, 1) --> (batch_size, seq_len, seq_len)
-        #     reset_masks = (reset_masks == 0).repeat(1, 1, seq_len).transpose(0, 1)
-        #     # combine reset masks with causal masks
-        #     causal_mask = reset_masks | causal_mask
+        if reset_masks is not None:
+            # (seq_len, batch, 1) --> (batch_size, seq_len, seq_len)
+            reset_masks = (reset_masks == 0).repeat(1, 1, seq_len).transpose(0, 1)
+            # combine reset masks with causal masks
+            causal_mask = reset_masks | causal_mask
 
         # Embed the input (batch, seq_len, num_obs) --> (batch, seq_len, d_model)
         x = self.embedding(x)
