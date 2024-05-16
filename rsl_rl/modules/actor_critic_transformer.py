@@ -140,19 +140,20 @@ class TransformerMemory(nn.Module):
         
         seq_len = x.size(0)
 
+        # Generate a causal mask to limit attention to the preceding tokens
+        causal_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=x.device)
+
         if reset_masks is not None:
             # mask should be (batch_size, seq_len), with True values for positions to ignore
             reset_masks = torch.where((reset_masks.squeeze(-1) == 0).transpose(0, 1) , torch.tensor(float('-inf'), device=x.device), torch.tensor(0.0, device=x.device))
-
-        # Generate a causal mask to limit attention to the preceding tokens
-        causal_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=x.device)
+            #TODO: combine reset_masks with causal_masks
 
         # Embed the input (seq_len, batch_size, num_obs) --> (seq_len, batch_size, d_model)
         # x = self.embedding(x)
         x = self.pos_encoder(x) # (seq_len, batch_size, d_model)
 
         # Pass through the transformer.
-        x = self.transformer_encoder(x, mask=causal_mask, src_key_padding_mask=reset_masks)   # (seq_len, batch_size, d_model)
+        x = self.transformer_encoder(x, mask=causal_mask)   # (seq_len, batch_size, d_model)
         
         if masks is not None:
             x = unpad_trajectories(x, masks)
