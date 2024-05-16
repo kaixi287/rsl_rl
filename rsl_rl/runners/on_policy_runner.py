@@ -42,6 +42,7 @@ class OnPolicyRunner:
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
         self.empirical_normalization = self.cfg["empirical_normalization"]
+        self.observation_only = self.policy_cfg["observation_only"]
         if self.empirical_normalization:
             self.obs_normalizer = EmpiricalNormalization(shape=[num_obs], until=1.0e8).to(self.device)
             self.critic_obs_normalizer = EmpiricalNormalization(shape=[num_critic_obs], until=1.0e8).to(self.device)
@@ -49,13 +50,10 @@ class OnPolicyRunner:
             self.obs_normalizer = torch.nn.Identity()  # no normalization
             self.critic_obs_normalizer = torch.nn.Identity()  # no normalization
         
-        # init buffers for transformer
-        if self.model_name == 'transformer':
+        # Check if using observation only or observation-action pair as input
+        if not self.observation_only:
             num_obs += self.env.num_actions
             num_critic_obs += self.env.num_actions
-            self.observation_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
-            self.critic_observation_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
-            self.action_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
 
         # init storage and model
         self.alg.init_storage(
@@ -65,6 +63,13 @@ class OnPolicyRunner:
             [num_critic_obs],
             [self.env.num_actions],
         )
+
+        # init buffers for transformer
+        if self.model_name == 'transformer':
+            self.observation_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
+            self.critic_observation_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
+            self.action_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
+            self.masks_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
 
         # Log
         self.log_dir = log_dir
@@ -78,8 +83,9 @@ class OnPolicyRunner:
         obs_seq = torch.stack([torch.stack(list(buf)) for buf in self.observation_buffers]).transpose(0, 1)
         critic_obs_seq = torch.stack([torch.stack(list(buf)) for buf in self.critic_observation_buffers]).transpose(0, 1)
         action_seq = torch.stack([torch.stack(list(buf)) for buf in self.action_buffers]).transpose(0, 1)
+        masks_seq = torch.stack([torch.stack(list(buf)) for buf in self.masks_buffers]).transpose(0, 1)
 
-        return obs_seq, critic_obs_seq, action_seq
+        return obs_seq, critic_obs_seq, action_seq, masks_seq
     
 
     def reset_buffers(self, env_idx, obs, critic_obs):
@@ -87,12 +93,14 @@ class OnPolicyRunner:
         self.observation_buffers[env_idx].clear()
         self.critic_observation_buffers[env_idx].clear()
         self.action_buffers[env_idx].clear()
+        self.masks_buffers[env_idx].clear()
 
         # Initialize buffers with zeros
         for _ in range(self.num_steps_per_env):
             self.observation_buffers[env_idx].append(torch.zeros_like(obs[env_idx]))
             self.critic_observation_buffers[env_idx].append(torch.zeros_like(critic_obs[env_idx]))
-            self.action_buffers[env_idx].append(torch.zeros(self.env.num_actions).to(self.device))
+            self.action_buffers[env_idx].append(torch.zeros(self.env.num_actions, device=self.device))
+            self.masks_buffers[env_idx].append(torch.zeros(1, dtype=torch.int, device=self.device))
 
 
     def update_buffers(self, obs, critic_obs, prev_actions=None, dones=None):
@@ -110,7 +118,8 @@ class OnPolicyRunner:
             # Append new observations and a placeholder for the new action
             self.observation_buffers[env_idx].append(obs[env_idx])
             self.critic_observation_buffers[env_idx].append(critic_obs[env_idx])
-            self.action_buffers[env_idx].append(torch.zeros(self.env.num_actions).to(self.device))
+            self.action_buffers[env_idx].append(torch.zeros(self.env.num_actions, device=self.device))
+            self.masks_buffers[env_idx].append(torch.ones(1, dtype=torch.int, device=self.device))
 
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):
@@ -164,8 +173,10 @@ class OnPolicyRunner:
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
                     if self.model_name == 'transformer':
-                        obs_seq, critic_obs_seq, action_seq = self.prepare_sequences()
-                        actions = self.alg.act(obs_seq, critic_obs_seq, action_seq)
+                        obs_seq, critic_obs_seq, action_seq, masks_seq = self.prepare_sequences()
+                        if self.observation_only:
+                            action_seq = None
+                        actions = self.alg.act(obs_seq, critic_obs_seq, action_seq, masks_seq)
                     else:
                         actions = self.alg.act(obs, critic_obs)
                     obs, rewards, dones, infos = self.env.step(actions)
@@ -207,8 +218,10 @@ class OnPolicyRunner:
                 # Learning step
                 start = stop
                 if self.model_name == 'transformer':
-                    _, critic_obs_seq, action_seq = self.prepare_sequences()
-                    self.alg.compute_returns(critic_obs_seq, action_seq)
+                    _, critic_obs_seq, action_seq, masks_seq = self.prepare_sequences()
+                    if self.observation_only:
+                        action_seq = None
+                    self.alg.compute_returns(critic_obs_seq, action_seq, masks_seq)
                 else:
                     self.alg.compute_returns(critic_obs)
 

@@ -27,6 +27,7 @@ class ActorCriticTransformer(ActorCritic):
         transformer_num_heads=4,
         transformer_num_layers=4,
         init_noise_std=1.0,
+        observation_only=False,
         **kwargs,
     ):
         if kwargs:
@@ -34,10 +35,13 @@ class ActorCriticTransformer(ActorCritic):
                 "ActorCriticTransformer.__init__ got unexpected arguments, which will be ignored: " + str(kwargs.keys()),
             )
         
+        if not observation_only:
+            num_actor_obs += num_actions
+            num_critic_obs += num_actions
 
         super().__init__(
-            num_actor_obs=num_actor_obs+num_actions,
-            num_critic_obs=num_actor_obs+num_actions,
+            num_actor_obs=num_actor_obs,
+            num_critic_obs=num_actor_obs,
             num_actions=num_actions,
             actor_hidden_dims=actor_hidden_dims,
             critic_hidden_dims=critic_hidden_dims,
@@ -47,22 +51,22 @@ class ActorCriticTransformer(ActorCritic):
 
         activation = get_activation(activation)
 
-        self.memory_a = TransformerMemory(num_actor_obs+num_actions, transformer_num_heads, transformer_num_layers, d_model, d_ff)
-        self.memory_c = TransformerMemory(num_critic_obs+num_actions, transformer_num_heads, transformer_num_layers, d_model, d_ff)
+        self.memory_a = TransformerMemory(num_actor_obs, transformer_num_heads, transformer_num_layers, d_model, d_ff)
+        self.memory_c = TransformerMemory(num_critic_obs, transformer_num_heads, transformer_num_layers, d_model, d_ff)
 
         print(f"Actor Transformer: {self.memory_a}")
         print(f"Critic Transformer: {self.memory_c}")
 
-    def act(self, observations, masks=None, **kwargs):
-        input_a = self.memory_a(observations, masks)
+    def act(self, observations, masks=None, reset_masks=None, **kwargs):
+        input_a = self.memory_a(observations, masks, reset_masks)
         return super().act(input_a.squeeze(0))
 
     def act_inference(self, observations):
         input_a = self.memory_a(observations)
         return super().act_inference(input_a.squeeze(0))
 
-    def evaluate(self, critic_observations, masks=None, **kwargs):
-        input_c = self.memory_c(critic_observations, masks)
+    def evaluate(self, critic_observations, masks=None, reset_masks=None, **kwargs):
+        input_c = self.memory_c(critic_observations, masks, reset_masks)
         return super().evaluate(input_c.squeeze(0))
 
 
@@ -129,12 +133,16 @@ class TransformerMemory(nn.Module):
             if p.dim() > 1:  # Applies to weights of linear layers and not biases
                 nn.init.xavier_uniform_(p)
     
-    def forward(self, x, masks=None):
+    def forward(self, x, masks=None, reset_masks=None):
 
-        if x.dim() < 3:
-            x = x.unsqueeze(0)  # Adjust for seq_len dimension in inference
+        # if masks is None:
+        #     x = x[-1].unsqueeze(0)
         
         seq_len = x.size(0)
+
+        if reset_masks is not None:
+            # mask should be (batch_size, seq_len), with True values for positions to ignore
+            reset_masks = torch.where(reset_masks.t() == 0, torch.tensor(float('-inf'), device=x.device), torch.tensor(0.0, device=x.device))
 
         # Generate a causal mask to limit attention to the preceding tokens
         causal_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=x.device)
@@ -144,7 +152,7 @@ class TransformerMemory(nn.Module):
         x = self.pos_encoder(x) # (seq_len, batch_size, d_model)
 
         # Pass through the transformer.
-        x = self.transformer_encoder(x, mask=causal_mask)   # (seq_len, batch_size, d_model)
+        x = self.transformer_encoder(x, mask=causal_mask, src_key_padding_mask=reset_masks)   # (seq_len, batch_size, d_model)
         
         if masks is not None:
             x = unpad_trajectories(x, masks)
