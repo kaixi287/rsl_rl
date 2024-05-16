@@ -42,6 +42,7 @@ class OnPolicyRunner:
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
         self.empirical_normalization = self.cfg["empirical_normalization"]
+        self.observation_only = self.policy_cfg["observation_only"]
         if self.empirical_normalization:
             self.obs_normalizer = EmpiricalNormalization(shape=[num_obs], until=1.0e8).to(self.device)
             self.critic_obs_normalizer = EmpiricalNormalization(shape=[num_critic_obs], until=1.0e8).to(self.device)
@@ -49,14 +50,10 @@ class OnPolicyRunner:
             self.obs_normalizer = torch.nn.Identity()  # no normalization
             self.critic_obs_normalizer = torch.nn.Identity()  # no normalization
         
-        # init buffers for transformer
-        if self.model_name == 'transformer':
+        # Check if using observation only or observation-action pair as input
+        if not self.observation_only:
             num_obs += self.env.num_actions
             num_critic_obs += self.env.num_actions
-            self.observation_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
-            self.critic_observation_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
-            self.action_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
-            self.mask_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
 
         # init storage and model
         self.alg.init_storage(
@@ -66,6 +63,13 @@ class OnPolicyRunner:
             [num_critic_obs],
             [self.env.num_actions],
         )
+
+        # init buffers for transformer
+        if self.model_name == 'transformer':
+            self.observation_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
+            self.critic_observation_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
+            self.action_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
+            self.mask_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
 
         # Log
         self.log_dir = log_dir
@@ -169,6 +173,8 @@ class OnPolicyRunner:
                 for i in range(self.num_steps_per_env):
                     if self.model_name == 'transformer':
                         obs_seq, critic_obs_seq, action_seq, mask_seq = self.prepare_sequences()
+                        if self.observation_only:
+                            action_seq = None
                         actions = self.alg.act(obs_seq, critic_obs_seq, action_seq, mask_seq)
                     else:
                         actions = self.alg.act(obs, critic_obs)
@@ -213,6 +219,8 @@ class OnPolicyRunner:
                 start = stop
                 if self.model_name == 'transformer':
                     _, critic_obs_seq, action_seq, mask_seq = self.prepare_sequences()
+                    if self.observation_only:
+                            action_seq = None
                     self.alg.compute_returns(critic_obs_seq, action_seq, mask_seq)
                 else:
                     self.alg.compute_returns(critic_obs)

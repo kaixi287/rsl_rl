@@ -27,13 +27,17 @@ class ActorCriticTransformer(ActorCritic):
         transformer_num_heads=4,
         transformer_num_layers=4,
         init_noise_std=1.0,
+        observation_only=False,
         **kwargs,
     ):
         if kwargs:
             print(
                 "ActorCriticTransformer.__init__ got unexpected arguments, which will be ignored: " + str(kwargs.keys()),
             )
-        
+
+        if not observation_only:
+            num_actor_obs += num_actions
+            num_critic_obs += num_actions
 
         super().__init__(
             num_actor_obs=d_model,
