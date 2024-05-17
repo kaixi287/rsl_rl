@@ -172,9 +172,14 @@ class OnPolicyRunner:
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
                     if self.model_name == 'transformer':
-                        obs_seq, critic_obs_seq, action_seq, mask_seq = self.prepare_sequences()
+                        action_seq = None
+                        sequences = self.prepare_sequences()
+                        
                         if self.observation_only:
-                            action_seq = None
+                            obs_seq, critic_obs_seq, _, mask_seq = sequences
+                        else:
+                            obs_seq, critic_obs_seq, action_seq, mask_seq = sequences
+
                         actions = self.alg.act(obs_seq, critic_obs_seq, action_seq, mask_seq)
                     else:
                         actions = self.alg.act(obs, critic_obs)
@@ -218,9 +223,14 @@ class OnPolicyRunner:
                 # Learning step
                 start = stop
                 if self.model_name == 'transformer':
-                    _, critic_obs_seq, action_seq, mask_seq = self.prepare_sequences()
+                    action_seq = None
+                    sequences = self.prepare_sequences()
+
                     if self.observation_only:
-                            action_seq = None
+                        _, critic_obs_seq, _, mask_seq = sequences
+                    else:
+                        _, critic_obs_seq, action_seq,mask_seq = sequences
+
                     self.alg.compute_returns(critic_obs_seq, action_seq, mask_seq)
                 else:
                     self.alg.compute_returns(critic_obs)

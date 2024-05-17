@@ -262,6 +262,9 @@ class TransformerMemory(nn.Module):
     
     def forward(self, x, masks=None, reset_masks=None):
 
+        # if masks is None:
+        #     x = x[-1].unsqueeze(0)
+
         x = x.transpose(0, 1) # (seq_len, batch, num_obs) --> (batch, seq_len, num_obs)
         seq_len = x.size(1)
 

@@ -69,7 +69,7 @@ class PPO:
     def act(self, obs, critic_obs, actions=None, reset_masks=None):
         if self.actor_critic.model_name == "rnn":
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
-            
+
         input_obs = obs
         input_critic_obs = critic_obs
 
