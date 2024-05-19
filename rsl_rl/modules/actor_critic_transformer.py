@@ -185,6 +185,19 @@ class PositionalEncoding(nn.Module):
     def forward(self, x):
         x = x + (self.pe[:, :x.shape[1], :]).requires_grad_(False) # (batch, seq_len, d_model)
         return self.dropout(x)
+
+class PositionalEmbedding(torch.nn.Module):
+    def __init__(self, dim):
+        super(PositionalEmbedding, self).__init__()
+
+        self.dim = dim
+        inv_freq = 1 / (10000 ** (torch.arange(0.0, dim, 2.0) / dim))
+        self.register_buffer("inv_freq", inv_freq)
+
+    def forward(self, positions):
+        sinusoid_inp = torch.einsum("i,j->ij", positions.float(), self.inv_freq)
+        pos_emb = torch.cat([sinusoid_inp.sin(), sinusoid_inp.cos()], dim=-1)
+        return pos_emb[:, None, :]
     
 class ExtendedEmbedding(nn.Module):
     def __init__(self, input_dim, d_model, activation=nn.ReLU(), intermediate_dim=None):
@@ -239,7 +252,9 @@ class TransformerMemory(nn.Module):
         self.embedding = nn.Linear(input_dim, d_model)
         # d_model = input_dim
         # self.embedding = ExtendedEmbedding(input_dim, d_model, activation, d_embed)
-        self.pos_encoder = PositionalEncoding(d_model, dropout)
+        # self.pos_encoder = PositionalEncoding(d_model, dropout)
+        self.pos_encoder = PositionalEmbedding(d_model)
+        self.drop = torch.nn.Dropout(dropout)
         # Create the encoder blocks
         encoder_blocks = []
         for _ in range(num_layers):
@@ -275,9 +290,17 @@ class TransformerMemory(nn.Module):
         #     # combine reset masks with causal masks
         #     causal_mask = reset_masks | causal_mask
 
+
         # Embed the input (batch, seq_len, num_obs) --> (batch, seq_len, d_model)
         x = self.embedding(x)
-        x = self.pos_encoder(x) # (batch, seq_len, d_model)
+
+        pos_ips = torch.arange(seq_len - 1, -1, -1.0, dtype=torch.float).to(
+            x.device
+        )
+        # pos_embs = [curr + prev x 1 x d_input] = [40 x 1 x 8]
+        x = x + self.pos_encoder(pos_ips)
+
+        # x = self.pos_encoder(x) # (batch, seq_len, d_model)
 
         # Pass through the transformer.
         x = self.transformer_encoder(x, mask=causal_mask)   # (batch, seq_len, d_model)
