@@ -159,10 +159,10 @@ class OnPolicyRunner:
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
         # If using transformer, initialize observation and action buffers for each environment
-        # if self.model_name == 'transformer':
-            # for env_idx in range(self.env.num_envs):
-            #     self.reset_buffers(env_idx, obs, critic_obs)
-            # self.update_buffers(obs, critic_obs)
+        if self.model_name == 'transformer':
+            for env_idx in range(self.env.num_envs):
+                self.reset_buffers(env_idx, obs, critic_obs)
+            self.update_buffers(obs, critic_obs)
 
         start_iter = self.current_learning_iteration
         tot_iter = start_iter + num_learning_iterations
@@ -172,15 +172,15 @@ class OnPolicyRunner:
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
                     if self.model_name == 'transformer':
-                        # action_seq = None
-                        # sequences = self.prepare_sequences()
+                        action_seq = None
+                        sequences = self.prepare_sequences()
                         
-                        # if self.observation_only:
-                        #     obs_seq, critic_obs_seq, _, mask_seq = sequences
-                        # else:
-                        #     obs_seq, critic_obs_seq, action_seq, mask_seq = sequences
+                        if self.observation_only:
+                            obs_seq, critic_obs_seq, _, mask_seq = sequences
+                        else:
+                            obs_seq, critic_obs_seq, action_seq, mask_seq = sequences
 
-                        actions = self.alg.act(obs, critic_obs) #, action_seq, mask_seq)
+                        actions = self.alg.act(obs_seq, critic_obs_seq, action_seq, mask_seq)
                     else:
                         actions = self.alg.act(obs, critic_obs)
                     obs, rewards, dones, infos = self.env.step(actions)
@@ -196,8 +196,8 @@ class OnPolicyRunner:
                         dones.to(self.device),
                     )
 
-                    # if self.model_name == 'transformer':
-                    #     self.update_buffers(obs, critic_obs, actions, dones)
+                    if self.model_name == 'transformer':
+                        self.update_buffers(obs, critic_obs, actions, dones)
 
                     self.alg.process_env_step(rewards, dones, infos)
 
@@ -223,15 +223,15 @@ class OnPolicyRunner:
                 # Learning step
                 start = stop
                 if self.model_name == 'transformer':
-                    # action_seq = None
-                    # sequences = self.prepare_sequences()
+                    action_seq = None
+                    sequences = self.prepare_sequences()
 
-                    # if self.observation_only:
-                    #     _, critic_obs_seq, _, mask_seq = sequences
-                    # else:
-                    #     _, critic_obs_seq, action_seq, mask_seq = sequences
+                    if self.observation_only:
+                        _, critic_obs_seq, _, mask_seq = sequences
+                    else:
+                        _, critic_obs_seq, action_seq, mask_seq = sequences
 
-                    self.alg.compute_returns(critic_obs) #, action_seq, mask_seq)
+                    self.alg.compute_returns(critic_obs_seq, action_seq, mask_seq)
                 else:
                     self.alg.compute_returns(critic_obs)
 

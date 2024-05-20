@@ -161,30 +161,6 @@ class MultiHeadAttentionBlock(nn.Module):
         # (batch, seq_len, d_model) --> (batch, seq_len, d_model)  
         return self.w_o(x)
 
-class PositionalEncoding(nn.Module):
-
-    def __init__(self, d_model: int, dropout: float, max_len: int = 50) -> None:
-        super().__init__()
-        self.d_model = d_model
-        self.dropout = nn.Dropout(dropout)
-        pe = torch.zeros(max_len, d_model)
-
-        # Create a vector of shape (max_len)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1) # (max_len, 1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)) # (d_model / 2)
-
-        pe[:, 0::2] = torch.sin(position * div_term) # sin(position * (10000 ** (2i / d_model))
-        pe[:, 1::2] = torch.cos(position * div_term) # cos(position * (10000 ** (2i / d_model))
-
-        # Add a batch dimension to the positional encoding
-        pe = pe.unsqueeze(0) # (1, seq_len, d_model)
-
-        # Register the positional encoding as a buffer
-        self.register_buffer('pe', pe)
-
-    def forward(self, x):
-        x = x + (self.pe[:, :x.shape[1], :]).requires_grad_(False) # (batch, seq_len, d_model)
-        return self.dropout(x)
 
 class PositionalEmbedding(torch.nn.Module):
     def __init__(self, dim):
@@ -197,7 +173,7 @@ class PositionalEmbedding(torch.nn.Module):
     def forward(self, positions):
         sinusoid_inp = torch.einsum("i,j->ij", positions.float(), self.inv_freq)
         pos_emb = torch.cat([sinusoid_inp.sin(), sinusoid_inp.cos()], dim=-1)
-        return pos_emb[:, None, :]
+        return pos_emb[None, :, :]
     
 class ExtendedEmbedding(nn.Module):
     def __init__(self, input_dim, d_model, activation=nn.ReLU(), intermediate_dim=None):
@@ -252,7 +228,6 @@ class TransformerMemory(nn.Module):
         self.embedding = nn.Linear(input_dim, d_model)
         # d_model = input_dim
         # self.embedding = ExtendedEmbedding(input_dim, d_model, activation, d_embed)
-        # self.pos_encoder = PositionalEncoding(d_model, dropout)
         self.pos_encoder = PositionalEmbedding(d_model)
         self.drop = torch.nn.Dropout(dropout)
         # Create the encoder blocks
@@ -277,8 +252,8 @@ class TransformerMemory(nn.Module):
     
     def forward(self, x, masks=None, reset_masks=None):
 
-        # x = x.transpose(0, 1) # (seq_len, batch, num_obs) --> (batch, seq_len, num_obs)
-        x = x.unsqueeze(1)  # (batch, num_obs) --> (batch, seq_len, num_obs)
+        x = x.transpose(0, 1) # (seq_len, batch, num_obs) --> (batch, seq_len, num_obs)
+        # x = x.unsqueeze(1)  # (batch, num_obs) --> (batch, seq_len, num_obs)
         seq_len = x.size(1)
 
         # Generate a causal mask to limit attention to the preceding tokens
@@ -297,19 +272,17 @@ class TransformerMemory(nn.Module):
         pos_ips = torch.arange(seq_len - 1, -1, -1.0, dtype=torch.float).to(
             x.device
         )
-        # pos_embs = [curr + prev x 1 x d_input] = [40 x 1 x 8]
-        x = x + self.pos_encoder(pos_ips)
-
-        # x = self.pos_encoder(x) # (batch, seq_len, d_model)
+        
+        x = x + self.drop(self.pos_encoder(pos_ips))    # (batch x seq_len x d_model)
 
         # Pass through the transformer.
         x = self.transformer_encoder(x, mask=causal_mask)   # (batch, seq_len, d_model)
-        x = x.squeeze(1)    # (batch, seq_len, d_model) --> (batch, d_model)
-        # x = x.transpose(0, 1) # (batch, seq_len, d_model) --> (seq_len, batch, d_model)
+        # x = x.squeeze(1)    # (batch, seq_len, d_model) --> (batch, d_model)
+        x = x.transpose(0, 1) # (batch, seq_len, d_model) --> (seq_len, batch, d_model)
         
-        # if masks is not None:
-        #     x = unpad_trajectories(x, masks)
-        # else:
-        #     x = x[-1]   # take only the last output in inference mode
+        if masks is not None:
+            x = unpad_trajectories(x, masks)
+        else:
+            x = x[-1]   # take only the last output in inference mode
 
         return x

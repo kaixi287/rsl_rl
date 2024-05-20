@@ -126,7 +126,7 @@ class PPO:
     def update(self):
         mean_value_loss = 0
         mean_surrogate_loss = 0
-        if self.actor_critic.model_name == "transformer":
+        if self.actor_critic.model_name == "mlp":
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         else:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
