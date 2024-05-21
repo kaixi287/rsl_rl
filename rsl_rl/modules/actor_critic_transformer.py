@@ -132,7 +132,7 @@ class MultiHeadAttentionBlock(nn.Module):
         attention_scores = (query @ key.transpose(-2, -1)) / math.sqrt(d_k)
         if mask is not None:
             # Write a very low value (indicating -inf) to the positions where mask == 0
-            attention_scores.masked_fill_(~mask.unsqueeze(1), float('-inf'))
+            attention_scores.masked_fill_((mask==0).unsqueeze(1), float('-inf'))
         attention_scores = attention_scores.softmax(dim=-1) # (batch, h, seq_len, seq_len) # Apply softmax
         if dropout is not None:
             attention_scores = dropout(attention_scores)
@@ -176,7 +176,7 @@ class PositionalEmbedding(torch.nn.Module):
         return pos_emb[None, :, :]
     
 class ExtendedEmbedding(nn.Module):
-    def __init__(self, input_dim, d_model, activation=nn.ReLU(), intermediate_dim=None):
+    def __init__(self, input_dim, d_model, intermediate_dim=None, activation=nn.ELU()):
         super(ExtendedEmbedding, self).__init__()
         if intermediate_dim is None:
             intermediate_dim = d_model  # Optionally set the intermediate dimension
@@ -184,16 +184,22 @@ class ExtendedEmbedding(nn.Module):
         # First linear layer maps from input_dim to intermediate_dim
         self.linear1 = nn.Linear(input_dim, intermediate_dim)
         
+        # Second linear layer maps from intermediate_dim to d_model
+        self.linear2 = nn.Linear(intermediate_dim, intermediate_dim)
+
+        # self.linear3 = nn.Linear(intermediate_dim, d_model)
+
         # Activation function, e.g., ReLU
         self.activation = activation
-        
-        # Second linear layer maps from intermediate_dim to d_model
-        self.linear2 = nn.Linear(intermediate_dim, d_model)
+
 
     def forward(self, x):
         x = self.linear1(x)
         x = self.activation(x)
         x = self.linear2(x)
+        # x = self.activation(x)
+        # x = self.linear3(x)
+
         return x
 
 class EncoderBlock(nn.Module):
@@ -225,9 +231,9 @@ class TransformerMemory(nn.Module):
     def __init__(self, input_dim, num_heads, num_layers, d_model: int = 256, d_ff: int = 1024, dropout: float = 0.1):
         super().__init__()
 
-        self.embedding = nn.Linear(input_dim, d_model)
+        # self.embedding = nn.Linear(input_dim, d_model)
         # d_model = input_dim
-        # self.embedding = ExtendedEmbedding(input_dim, d_model, activation, d_embed)
+        self.embedding = ExtendedEmbedding(input_dim, d_model, intermediate_dim=512)
         self.pos_encoder = PositionalEmbedding(d_model)
         self.drop = torch.nn.Dropout(dropout)
         # Create the encoder blocks
@@ -239,7 +245,7 @@ class TransformerMemory(nn.Module):
             encoder_blocks.append(encoder_block)
         
         self.transformer_encoder = Encoder(d_model, nn.ModuleList(encoder_blocks))
-        # self.initialize_transformer()
+        self.initialize_transformer()
     
     def initialize_transformer(self):
         for p in self.transformer_encoder.parameters():
@@ -259,11 +265,11 @@ class TransformerMemory(nn.Module):
         # Generate a causal mask to limit attention to the preceding tokens
         causal_mask = self.generate_causal_mask(seq_len).to(x.device)   # (1, seq_len, seq_len)
 
-        # if reset_masks is not None:
-        #     # (seq_len, batch, 1) --> (batch_size, seq_len, seq_len)
-        #     reset_masks = (reset_masks == 0).repeat(1, 1, seq_len).transpose(0, 1)
-        #     # combine reset masks with causal masks
-        #     causal_mask = reset_masks | causal_mask
+        if reset_masks is not None:
+            # (seq_len, batch, 1) --> (batch_size, seq_len, seq_len)
+            reset_masks = reset_masks.repeat(1, 1, seq_len).transpose(0, 1)
+            # combine reset masks with causal masks
+            causal_mask = reset_masks & causal_mask
 
 
         # Embed the input (batch, seq_len, num_obs) --> (batch, seq_len, d_model)
@@ -273,10 +279,10 @@ class TransformerMemory(nn.Module):
             x.device
         )
         
-        x = x + self.drop(self.pos_encoder(pos_ips))    # (batch x seq_len x d_model)
+        x = x + self.pos_encoder(pos_ips)    # (batch x seq_len x d_model)
 
         # Pass through the transformer.
-        x = self.transformer_encoder(x, mask=causal_mask)   # (batch, seq_len, d_model)
+        x = self.transformer_encoder(x, mask=causal_mask) #, mask=causal_mask)   # (batch, seq_len, d_model)
         # x = x.squeeze(1)    # (batch, seq_len, d_model) --> (batch, d_model)
         x = x.transpose(0, 1) # (batch, seq_len, d_model) --> (seq_len, batch, d_model)
         
