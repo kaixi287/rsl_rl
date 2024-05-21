@@ -125,14 +125,19 @@ class MultiHeadAttentionBlock(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     @staticmethod
-    def attention(query, key, value, mask, dropout: nn.Dropout):
-        d_k = query.shape[-1]
+    def attention(query, key, value, mask, padding_mask, dropout: nn.Dropout):
+        batch_size, h, seq_len, d_k = query.shape
         # Just apply the formula from the paper
         # (batch, h, seq_len, d_k) --> (batch, h, seq_len, seq_len)
         attention_scores = (query @ key.transpose(-2, -1)) / math.sqrt(d_k)
         if mask is not None:
             # Write a very low value (indicating -inf) to the positions where mask == 0
             attention_scores.masked_fill_((mask==0).unsqueeze(1), float('-inf'))
+        if padding_mask is not None:
+            # padding mask: (seq_len, batch, 1)
+            padding_mask = padding_mask.transpose(0, 1).squeeze(-1)
+            padding_mask = padding_mask.view(batch_size, 1, 1, seq_len).expand(-1, h, -1, -1)
+            attention_scores.masked_fill_((padding_mask==0), float('-inf'))
         attention_scores = attention_scores.softmax(dim=-1) # (batch, h, seq_len, seq_len) # Apply softmax
         if dropout is not None:
             attention_scores = dropout(attention_scores)
@@ -140,7 +145,7 @@ class MultiHeadAttentionBlock(nn.Module):
         # return attention scores which can be used for visualization
         return (attention_scores @ value), attention_scores
     
-    def forward(self, q, k, v, mask):
+    def forward(self, q, k, v, mask, padding_mask):
         query = self.w_q(q) # (batch, seq_len, d_model) --> (batch, seq_len, d_model)
         key = self.w_k(k) # (batch, seq_len, d_model) --> (batch, seq_len, d_model)
         value = self.w_v(v) # (batch, seq_len, d_model) --> (batch, seq_len, d_model)
@@ -151,7 +156,7 @@ class MultiHeadAttentionBlock(nn.Module):
         value = value.view(value.shape[0], value.shape[1], self.num_heads, self.d_k).transpose(1, 2)
 
         # Calculate attention
-        x, self.attention_scores = MultiHeadAttentionBlock.attention(query, key, value, mask, self.dropout)
+        x, self.attention_scores = MultiHeadAttentionBlock.attention(query, key, value, mask, padding_mask, self.dropout)
         
         # Combine all the heads together
         # (batch, h, seq_len, d_k) --> (batch, seq_len, h, d_k) --> (batch, seq_len, d_model)
@@ -187,7 +192,7 @@ class ExtendedEmbedding(nn.Module):
         # Second linear layer maps from intermediate_dim to d_model
         self.linear2 = nn.Linear(intermediate_dim, intermediate_dim)
 
-        # self.linear3 = nn.Linear(intermediate_dim, d_model)
+        self.linear3 = nn.Linear(intermediate_dim, d_model)
 
         # Activation function, e.g., ReLU
         self.activation = activation
@@ -197,8 +202,8 @@ class ExtendedEmbedding(nn.Module):
         x = self.linear1(x)
         x = self.activation(x)
         x = self.linear2(x)
-        # x = self.activation(x)
-        # x = self.linear3(x)
+        x = self.activation(x)
+        x = self.linear3(x)
 
         return x
 
@@ -210,8 +215,8 @@ class EncoderBlock(nn.Module):
         self.feed_forward_block = feed_forward_block
         self.residual_connections = nn.ModuleList([ResidualConnection(features, dropout) for _ in range(2)])
 
-    def forward(self, x, src_mask):
-        x = self.residual_connections[0](x, lambda x: self.self_attention_block(x, x, x, src_mask))
+    def forward(self, x, src_mask, padding_mask):
+        x = self.residual_connections[0](x, lambda x: self.self_attention_block(x, x, x, src_mask, padding_mask))
         x = self.residual_connections[1](x, self.feed_forward_block)
         return x
     
@@ -222,9 +227,9 @@ class Encoder(nn.Module):
         self.layers = layers
         self.norm = LayerNormalization(features)
 
-    def forward(self, x, mask):
+    def forward(self, x, mask, padding_mask):
         for layer in self.layers:
-            x = layer(x, mask)
+            x = layer(x, mask, padding_mask)
         return self.norm(x)
 
 class TransformerMemory(nn.Module):
@@ -260,17 +265,10 @@ class TransformerMemory(nn.Module):
 
         x = x.transpose(0, 1) # (seq_len, batch, num_obs) --> (batch, seq_len, num_obs)
         # x = x.unsqueeze(1)  # (batch, num_obs) --> (batch, seq_len, num_obs)
-        seq_len = x.size(1)
+        seq_len = x.shape[1]
 
         # Generate a causal mask to limit attention to the preceding tokens
         causal_mask = self.generate_causal_mask(seq_len).to(x.device)   # (1, seq_len, seq_len)
-
-        if reset_masks is not None:
-            # (seq_len, batch, 1) --> (batch_size, seq_len, seq_len)
-            reset_masks = reset_masks.repeat(1, 1, seq_len).transpose(0, 1)
-            # combine reset masks with causal masks
-            causal_mask = reset_masks & causal_mask
-
 
         # Embed the input (batch, seq_len, num_obs) --> (batch, seq_len, d_model)
         x = self.embedding(x)
@@ -282,7 +280,7 @@ class TransformerMemory(nn.Module):
         x = x + self.pos_encoder(pos_ips)    # (batch x seq_len x d_model)
 
         # Pass through the transformer.
-        x = self.transformer_encoder(x, mask=causal_mask) #, mask=causal_mask)   # (batch, seq_len, d_model)
+        x = self.transformer_encoder(x, mask=None, padding_mask=reset_masks) #, mask=causal_mask)   # (batch, seq_len, d_model)
         # x = x.squeeze(1)    # (batch, seq_len, d_model) --> (batch, d_model)
         x = x.transpose(0, 1) # (batch, seq_len, d_model) --> (seq_len, batch, d_model)
         
