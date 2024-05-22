@@ -117,7 +117,7 @@ class TransformerMemory(nn.Module):
     def __init__(self, input_dim, num_heads, num_layers, d_model: int = 256, d_ff: int = 1024, dropout: float = 0.1):
         super().__init__()
 
-        # self.embedding = nn.Linear(input_dim, d_model)
+        self.embedding = nn.Linear(input_dim, d_model)
         # self.embedding = ExtendedEmbedding(input_dim, d_model, activation, d_embed)
         self.pos_encoder = PositionalEncoding(input_dim, dropout)
         transformer_layer =nn.TransformerEncoderLayer(d_model=input_dim,
@@ -126,7 +126,7 @@ class TransformerMemory(nn.Module):
                                                       dropout=dropout
                                                       )
         self.transformer_encoder = nn.TransformerEncoder(transformer_layer, num_layers)
-        # self.initialize_transformer()
+        self.initialize_transformer()
     
     def initialize_transformer(self):
         for p in self.transformer_encoder.parameters():
@@ -134,10 +134,8 @@ class TransformerMemory(nn.Module):
                 nn.init.xavier_uniform_(p)
     
     def forward(self, x, masks=None, reset_masks=None):
-
-        # if masks is None:
-        #     x = x[-1].unsqueeze(0)
         
+        # (seq_len, batch, num_obs)
         seq_len = x.size(0)
 
         # Generate a causal mask to limit attention to the preceding tokens
@@ -149,16 +147,15 @@ class TransformerMemory(nn.Module):
             #TODO: combine reset_masks with causal_masks
 
         # Embed the input (seq_len, batch_size, num_obs) --> (seq_len, batch_size, d_model)
-        # x = self.embedding(x)
+        x = self.embedding(x)
         x = self.pos_encoder(x) # (seq_len, batch_size, d_model)
 
         # Pass through the transformer.
-        x = self.transformer_encoder(x, mask=causal_mask)   # (seq_len, batch_size, d_model)
+        x = self.transformer_encoder(x, mask=causal_mask, src_key_padding_mask=reset_masks)   # (seq_len, batch_size, d_model)
         
         if masks is not None:
             x = unpad_trajectories(x, masks)
         else:
             x = x[-1]   # take only the last output in inference mode
-            # print(f"output x shape in inference mode: {x.shape}")   #(4096, 256)
 
         return x
