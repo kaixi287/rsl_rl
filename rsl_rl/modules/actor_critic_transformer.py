@@ -134,7 +134,7 @@ class MultiHeadAttentionBlock(nn.Module):
             # Write a very low value (indicating -inf) to the positions where mask == 0
             attention_scores.masked_fill_((mask==0).unsqueeze(1), float('-inf'))
         if padding_mask is not None:
-            # padding mask: (seq_len, batch, 1)
+            # padding mask: (seq_len, batch, 1) --> (batch, seq_len)
             padding_mask = padding_mask.transpose(0, 1).squeeze(-1)
             padding_mask = padding_mask.view(batch_size, 1, 1, seq_len).expand(-1, h, -1, -1)
             attention_scores.masked_fill_((padding_mask==0), float('-inf'))
@@ -263,7 +263,7 @@ class TransformerMemory(nn.Module):
     
     def forward(self, x, masks=None, reset_masks=None):
 
-        x = x.transpose(0, 1) # (seq_len, batch, num_obs) --> (batch, seq_len, num_obs)
+        x = x.permute(1, 0, 2) # (seq_len, batch, num_obs) --> (batch, seq_len, num_obs)
         # x = x.unsqueeze(1)  # (batch, num_obs) --> (batch, seq_len, num_obs)
         seq_len = x.shape[1]
 
@@ -280,9 +280,9 @@ class TransformerMemory(nn.Module):
         x = x + self.pos_encoder(pos_ips)    # (batch x seq_len x d_model)
 
         # Pass through the transformer.
-        x = self.transformer_encoder(x, mask=None, padding_mask=reset_masks) #, mask=causal_mask)   # (batch, seq_len, d_model)
+        x = self.transformer_encoder(x, mask=causal_mask, padding_mask=reset_masks) #, mask=causal_mask)   # (batch, seq_len, d_model)
         # x = x.squeeze(1)    # (batch, seq_len, d_model) --> (batch, d_model)
-        x = x.transpose(0, 1) # (batch, seq_len, d_model) --> (seq_len, batch, d_model)
+        x = x.permute(1, 0, 2) # (batch, seq_len, d_model) --> (seq_len, batch, d_model)
         
         if masks is not None:
             x = unpad_trajectories(x, masks)
