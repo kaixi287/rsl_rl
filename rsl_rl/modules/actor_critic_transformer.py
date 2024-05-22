@@ -47,8 +47,8 @@ class ActorCriticTransformer(ActorCritic):
 
         activation = get_activation(activation)
 
-        self.memory_a = StableTransformerXL(num_actor_obs+num_actions, transformer_num_layers, transformer_num_heads, d_model, d_ff, mem_len=2*(num_actor_obs+num_actions))
-        self.memory_c = StableTransformerXL(num_critic_obs+num_actions, transformer_num_layers, transformer_num_heads, d_model, d_ff, mem_len=2*(num_critic_obs+num_actions))
+        self.memory_a = StableTransformerXL(num_actor_obs+num_actions, transformer_num_layers, transformer_num_heads, d_model, d_ff)
+        self.memory_c = StableTransformerXL(num_critic_obs+num_actions, transformer_num_layers, transformer_num_heads, d_model, d_ff)
 
         # Memory only used for roll-out
         self.memory_act = None
@@ -59,11 +59,7 @@ class ActorCriticTransformer(ActorCritic):
         print(f"Critic Transformer: {self.memory_c}")
 
     def act(self, observations, masks=None, memory=None, **kwargs):
-        output_a = self.memory_a(observations, memory, masks)
-        input_a = output_a['logits']
-        if memory is not None:
-            # Inference mode
-            self.memory_act = output_a['memory']
+        input_a = self.memory_a(observations, memory, masks)
         return super().act(input_a.squeeze(0))
 
     def act_inference(self, observations):
@@ -71,11 +67,7 @@ class ActorCriticTransformer(ActorCritic):
         return super().act_inference(input_a.squeeze(0))
 
     def evaluate(self, critic_observations, masks=None, memory=None, **kwargs):
-        output_c = self.memory_c(critic_observations, memory, masks)
-        input_c = output_c['logits']
-        if memory is not None:
-            # Inference mode
-            self.memory_eval = output_c['memory']
+        input_c = self.memory_c(critic_observations, memory, masks)
         return super().evaluate(input_c.squeeze(0))
     
     def init_memory(self, device=torch.device("cpu")):
@@ -167,18 +159,18 @@ class MultiHeadAttentionXL(torch.nn.Module):
         self.lout = torch.nn.Linear(d_inner * n_heads, d_input, bias=False)
         self.dropo = torch.nn.Dropout(dropout)
 
-    def _rel_shift(self, x):
-        # x shape: [curr x curr+prev x B x n_heads] = [20 x 40 x 5 x 3]
-        zero_pad = torch.zeros(
-            (x.size(0), 1, *x.size()[2:]), device=x.device, dtype=x.dtype
-        )
-        return (
-            torch.cat([zero_pad, x], dim=1)
-            .view(x.size(1) + 1, x.size(0), *x.size()[2:])[1:]
-            .view_as(x)
-        )
+    # def _rel_shift(self, x):
+    #     # x shape: [curr x curr x B x n_heads] = [20 x 20 x 5 x 3]
+    #     zero_pad = torch.zeros(
+    #         (x.size(0), 1, *x.size()[2:]), device=x.device, dtype=x.dtype
+    #     )
+    #     return (
+    #         torch.cat([zero_pad, x], dim=1)
+    #         .view(x.size(1) + 1, x.size(0), *x.size()[2:])[1:]
+    #         .view_as(x)
+    #     )
 
-    def forward(self, input_, pos_embs, memory, u, v, mask=None):
+    def forward(self, input_, pos_embs, u, v, mask=None):
         """
         + pos_embs: positional embeddings passed separately to handle relative positions.
         + Arguments
@@ -197,15 +189,11 @@ class MultiHeadAttentionXL(torch.nn.Module):
             - d: inner dimension, ps: previous sequence length
         """
         cur_seq = input_.shape[0]
-        prev_seq = memory.shape[0]
         H, d = self.n_heads, self.d_inner
-        # concat memory across sequence dimension
-        # input_with_memory = [seq + prev_seq x B x d_input] = [40 x 5 x 8]
-        input_with_memory = torch.cat([memory, input_], dim=0)
 
-        # k_tfmd, v_tfmd = [seq + prev_seq x B x n_heads.d_head_inner], [seq + prev_seq x B x n_heads.d_head_inner]
+        # k_tfmd, v_tfmd = [seq x B x n_heads.d_head_inner], [seq + prev_seq x B x n_heads.d_head_inner]
         k_tfmd, v_tfmd = torch.chunk(
-            self.linear_kv(input_with_memory),
+            self.linear_kv(input_),
             2,
             dim=-1,
         )
@@ -215,28 +203,27 @@ class MultiHeadAttentionXL(torch.nn.Module):
         _, bs, _ = q_tfmd.shape
         assert bs == k_tfmd.shape[1]
 
-        # content_attn = [curr x curr+prev x B x n_heads] = [20 x 40 x 5 x 3]
+        # content_attn = [curr x curr x B x n_heads] = [20 x 40 x 5 x 3]
         content_attn = torch.einsum(
             "ibhd,jbhd->ijbh",
             (
                 (q_tfmd.view(cur_seq, bs, H, d) + u),
-                k_tfmd.view(cur_seq + prev_seq, bs, H, d),
+                k_tfmd.view(cur_seq, bs, H, d),
             ),
         )
 
-        # p_tfmd: [seq + prev_seq x 1 x n_heads.d_head_inner] = [40 x 1 x 96]
+        # p_tfmd: [seq x 1 x n_heads.d_head_inner] = [40 x 1 x 96]
         p_tfmd = self.linear_p(pos_embs)
-        # position_attn = [curr x curr+prev x B x n_heads] = [20 x 40 x 5 x 3]
+        # position_attn = [curr x curr x B x n_heads] = [20 x 40 x 5 x 3]
         position_attn = torch.einsum(
             "ibhd,jhd->ijbh",
             (
                 (q_tfmd.view(cur_seq, bs, H, d) + v),
-                p_tfmd.view(cur_seq + prev_seq, H, d),
+                p_tfmd.view(cur_seq, H, d),
             ),
         )
-
-        position_attn = self._rel_shift(position_attn)
-        # attn = [curr x curr+prev x B x n_heads] = [20 x 40 x 5 x 3]
+        
+        # attn = [curr x curr x B x n_heads] = [20 x 40 x 5 x 3]
         attn = content_attn + position_attn
 
         if mask is not None and mask.any().item():
@@ -245,7 +232,7 @@ class MultiHeadAttentionXL(torch.nn.Module):
         # rescale to prevent values from exploding.
         # normalize across the value sequence dimension.
         attn = torch.softmax(attn * self.scale, dim=1)
-        # attn = [curr x curr+prev x B x n_heads] = [20 x 40 x 5 x 3]
+        # attn = [curr x curr x B x n_heads] = [20 x 40 x 5 x 3]
         attn = self.dropa(attn)
 
         # attn_weighted_values = [curr x B x n_heads.d_inner] = [20 x 5 x 96]
@@ -254,7 +241,7 @@ class MultiHeadAttentionXL(torch.nn.Module):
                 "ijbh,jbhd->ibhd",
                 (
                     attn,  # (cs, cs + ps, b, H)
-                    v_tfmd.view(cur_seq + prev_seq, bs, H, d),  # (cs + ps, b, H, d)
+                    v_tfmd.view(cur_seq, bs, H, d),  # (cs + ps, b, H, d)
                 ),
             )  # (cs, b, H, d)
             .contiguous()  # we need to change the memory layout to make `view` work
@@ -293,9 +280,9 @@ class StableTransformerEncoderLayerXL(torch.nn.Module):
         self.norm1 = torch.nn.LayerNorm(d_input)
         self.norm2 = torch.nn.LayerNorm(d_input)
 
-    def forward(self, input_, pos_embs, u, v, mask=None, mems=None):
+    def forward(self, input_, pos_embs, u, v, mask=None):
         src2 = self.norm1(input_)
-        src2 = self.mha(src2, pos_embs, mems, u, v, mask=mask)
+        src2 = self.mha(src2, pos_embs, u, v, mask=mask)
         src = self.gate1(input_, src2) if self.gating else input_ + src2
         src2 = self.ff(self.norm2(src))
         src = self.gate2(src, src2) if self.gating else src + src2
@@ -311,8 +298,7 @@ class StableTransformerXL(torch.nn.Module):
         d_head_inner,   # d_model
         d_ff_inner,
         dropout=0.1,
-        dropouta=0.0,
-        mem_len=100,
+        dropouta=0.0
     ):
         super(StableTransformerXL, self).__init__()
 
@@ -326,7 +312,6 @@ class StableTransformerXL(torch.nn.Module):
 
         self.pos_embs = PositionalEmbedding(d_input)
         self.drop = torch.nn.Dropout(dropout)
-        self.mem_len = mem_len
         self.layers = torch.nn.ModuleList(
             [
                 StableTransformerEncoderLayerXL(
@@ -348,103 +333,46 @@ class StableTransformerXL(torch.nn.Module):
             torch.nn.Parameter(torch.zeros(self.n_heads, self.d_head_inner)),
         )
 
-    def init_memory(self, device=torch.device("cpu")):
-        return [
-            torch.empty(0, dtype=torch.float).to(device)
-            for _ in range(self.n_layers + 1)
-        ]
-
-    def update_memory(self, previous_memory, hidden_states):
-        """
-        + Arguments
-            - previous_memory: List[torch.FloatTensor],
-            - hidden_states: List[torch.FloatTensor]
-        """
-        assert len(hidden_states) == len(previous_memory)
-        mem_len, seq_len = previous_memory[0].size(0), hidden_states[0].size(0)
-        # mem_len, seq_len = 3, hidden_states[0].size(0)
-        # print(mem_len, seq_len)
-
-        with torch.no_grad():
-            new_memory = []
-            end_idx = mem_len + seq_len
-            beg_idx = max(0, end_idx - self.mem_len)
-            for m, h in zip(previous_memory, hidden_states):
-                cat = torch.cat([m, h], dim=0)
-                new_memory.append(cat[beg_idx:end_idx].detach())
-        return new_memory
-    
-    def reset_memory_for_batch(self, memory, batch_index, device=torch.device("cpu")):
-        """
-        Resets the memory for a specific batch index across all layers.
-
-        Args:
-        - memory (list of torch.Tensor): The memory to reset, each tensor with shape [T, B, d_inner].
-        - batch_index (int): The index of the batch to reset.
-        - device (torch.device): The device on which the memory tensors are stored.
-
-        Returns:
-        - modified_memory (list of torch.Tensor): The memory after resetting the specified batch.
-        """
-        # Iterate over each memory tensor corresponding to each layer
-        for i in range(len(memory)):
-            T, B, d_inner = memory[i].shape
-            # Replace the slice corresponding to the batch_index with empty tensors
-            memory[i][:, batch_index:batch_index + 1, :] = torch.zeros(T, 1, d_inner, device=device)
-
-        return memory
-
-    def forward(self, inputs, memory=None, masks=None):
+    def forward(self, inputs, masks=None):
         """
         + Arguments
             - inputs - torch.FloatTensor = [seq_len x B x d_inner] = [20 x 5 x 8]
             - memory - Optional, list[torch.FloatTensor] = [[T x B x d_inner] x 5]
         """
-        if memory is None:
-            memory = self.init_memory(inputs.device)
-        assert len(memory) == len(self.layers) + 1
 
         cur_seq, bs = inputs.shape[:2]
-        prev_seq = memory[0].size(0)
 
-        # dec_attn_mask = [curr x curr + prev x 1] = [20 x 40 x 1]
+        # dec_attn_mask = [curr x curr x 1] = [20 x 40 x 1]
         dec_attn_mask = (
             torch.triu(
-                torch.ones((cur_seq, cur_seq + prev_seq)),
-                diagonal=1 + prev_seq,
+                torch.ones((cur_seq, cur_seq)),
+                diagonal=1,
             )
             .bool()[..., None]
             .to(inputs.device)
         )
             
-        pos_ips = torch.arange(cur_seq + prev_seq - 1, -1, -1.0, dtype=torch.float).to(
+        pos_ips = torch.arange(cur_seq - 1, -1, -1.0, dtype=torch.float).to(
             inputs.device
         )
-        # pos_embs = [curr + prev x 1 x d_input] = [40 x 1 x 8]
+        # pos_embs = [curr x 1 x d_input] = [40 x 1 x 8]
         pos_embs = self.drop(self.pos_embs(pos_ips))
         if self.d_input % 2 != 0:
             pos_embs = pos_embs[:, :, :-1]
 
-        hidden_states = [inputs]
         layer_out = inputs
-        for mem, layer in zip(memory, self.layers):
+        for layer in self.layers:
             # layer_out = [curr x B x d_inner] = [20 x 5 x 8]
             layer_out = layer(
                 layer_out,
                 pos_embs,
                 self.u,
                 self.v,
-                mask=dec_attn_mask,
-                mems=mem,
+                mask=dec_attn_mask
             )
-            hidden_states.append(layer_out)
-
-        # Memory is treated as a const., don't propagate through it
-        # new_memory = [[T x B x d_inner] x 4]
-        memory = self.update_memory(memory, hidden_states)
 
         if masks is not None:
             out = unpad_trajectories(layer_out, masks)
         else:
             out = layer_out[-1]
-        return {"logits": out, "memory": memory}
+        return out
