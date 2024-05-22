@@ -66,32 +66,42 @@ class PPO:
     def train_mode(self):
         self.actor_critic.train()
 
-    def act(self, obs, critic_obs, actions=None, memory_act=None, memory_eval=None):
+
+    def act(self, obs, critic_obs, actions=None, reset_masks=None):
         if self.actor_critic.model_name == "rnn":
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
 
+        input_obs = obs
+        input_critic_obs = critic_obs
+
         if actions is not None:
             # Concatenate observation with action
-            concatenated_obs = torch.cat((obs, actions), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
-            concatenated_critic_obs = torch.cat((critic_obs, actions), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
-            # Compute the actions and values using concatenated observaition-actions
-            self.transition.actions = self.actor_critic.act(concatenated_obs, masks=None, memory=memory_act).detach()
-            self.transition.values = self.actor_critic.evaluate(concatenated_critic_obs, masks=None, memory=memory_eval).detach()
-        else:
-            # Compute the actions and values using observation
-            self.transition.actions = self.actor_critic.act(obs, masks=None, memory=memory_act).detach()
-            self.transition.values = self.actor_critic.evaluate(critic_obs, masks=None, memory=memory_eval).detach()
+            input_obs = torch.cat((input_obs, actions), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
+            input_critic_obs = torch.cat((input_critic_obs, actions), dim=-1)  # [seq_len, num_envs, obs_size + action_size]
+
+        self.transition.actions = self.actor_critic.act(input_obs, masks=None, reset_masks=reset_masks).detach()
+        self.transition.values = self.actor_critic.evaluate(input_critic_obs, masks=None, reset_masks=reset_masks).detach()
+
         self.transition.actions_log_prob = self.actor_critic.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.actor_critic.action_mean.detach()
         self.transition.action_sigma = self.actor_critic.action_std.detach()
         # need to record obs and critic_obs before env.step()
-        if actions is not None and obs.dim() > 2:
-            # record the most recent observation
-            self.transition.observations = torch.cat((obs[-1].squeeze(0), self.transition.actions), dim=-1)
-            self.transition.critic_observations = torch.cat((critic_obs[-1].squeeze(0), self.transition.actions), dim=-1)
+        # record the most recent observation if obs is a sequence
+        if obs.dim() > 2:
+            last_obs = obs[-1].squeeze(0)
+            last_critic_obs = critic_obs[-1].squeeze(0)
+
+            # Concatenate observation with the last action
+            if actions is not None:
+                last_obs = torch.cat((last_obs, self.transition.actions), dim=-1)
+                last_critic_obs = torch.cat((last_critic_obs, self.transition.actions), dim=-1)
+
+            self.transition.observations = last_obs
+            self.transition.critic_observations = last_critic_obs
         else:
             self.transition.observations = obs
             self.transition.critic_observations = critic_obs
+
         return self.transition.actions
 
     def process_env_step(self, rewards, dones, infos):

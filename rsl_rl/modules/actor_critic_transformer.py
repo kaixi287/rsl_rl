@@ -36,8 +36,8 @@ class ActorCriticTransformer(ActorCritic):
         
 
         super().__init__(
-            num_actor_obs=num_actor_obs+num_actions,
-            num_critic_obs=num_critic_obs+num_actions,
+            num_actor_obs=num_actor_obs,
+            num_critic_obs=num_critic_obs,
             num_actions=num_actions,
             actor_hidden_dims=actor_hidden_dims,
             critic_hidden_dims=critic_hidden_dims,
@@ -47,8 +47,8 @@ class ActorCriticTransformer(ActorCritic):
 
         activation = get_activation(activation)
 
-        self.memory_a = StableTransformerXL(num_actor_obs+num_actions, transformer_num_layers, transformer_num_heads, d_model, d_ff)
-        self.memory_c = StableTransformerXL(num_critic_obs+num_actions, transformer_num_layers, transformer_num_heads, d_model, d_ff)
+        self.memory_a = StableTransformerXL(num_actor_obs, transformer_num_layers, transformer_num_heads, d_model, d_ff)
+        self.memory_c = StableTransformerXL(num_critic_obs, transformer_num_layers, transformer_num_heads, d_model, d_ff)
 
         # Memory only used for roll-out
         self.memory_act = None
@@ -58,16 +58,16 @@ class ActorCriticTransformer(ActorCritic):
         print(f"Actor Transformer: {self.memory_a}")
         print(f"Critic Transformer: {self.memory_c}")
 
-    def act(self, observations, masks=None, memory=None, **kwargs):
-        input_a = self.memory_a(observations, memory, masks)
+    def act(self, observations, masks=None, **kwargs):
+        input_a = self.memory_a(observations, masks)
         return super().act(input_a.squeeze(0))
 
     def act_inference(self, observations):
         input_a = self.memory_a(observations)['logits']
         return super().act_inference(input_a.squeeze(0))
 
-    def evaluate(self, critic_observations, masks=None, memory=None, **kwargs):
-        input_c = self.memory_c(critic_observations, memory, masks)
+    def evaluate(self, critic_observations, masks=None, **kwargs):
+        input_c = self.memory_c(critic_observations, masks)
         return super().evaluate(input_c.squeeze(0))
     
     def init_memory(self, device=torch.device("cpu")):
