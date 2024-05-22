@@ -132,12 +132,12 @@ class MultiHeadAttentionBlock(nn.Module):
         attention_scores = (query @ key.transpose(-2, -1)) / math.sqrt(d_k)
         if mask is not None:
             # Write a very low value (indicating -inf) to the positions where mask == 0
-            attention_scores.masked_fill_((mask==0).unsqueeze(1), float('-inf'))
+            attention_scores.masked_fill_((mask==0).unsqueeze(1), -1e9)
         if padding_mask is not None:
             # padding mask: (seq_len, batch, 1) --> (batch, seq_len)
             padding_mask = padding_mask.transpose(0, 1).squeeze(-1)
             padding_mask = padding_mask.view(batch_size, 1, 1, seq_len).expand(-1, h, -1, -1)
-            attention_scores.masked_fill_((padding_mask==0), float('-inf'))
+            attention_scores.masked_fill_((padding_mask==0), -1e9)
         attention_scores = attention_scores.softmax(dim=-1) # (batch, h, seq_len, seq_len) # Apply softmax
         if dropout is not None:
             attention_scores = dropout(attention_scores)
