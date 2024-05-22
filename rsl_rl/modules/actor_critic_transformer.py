@@ -40,8 +40,8 @@ class ActorCriticTransformer(ActorCritic):
             num_critic_obs += num_actions
 
         super().__init__(
-            num_actor_obs=num_actor_obs,
-            num_critic_obs=num_actor_obs,
+            num_actor_obs=d_model,
+            num_critic_obs=d_model,
             num_actions=num_actions,
             actor_hidden_dims=actor_hidden_dims,
             critic_hidden_dims=critic_hidden_dims,
@@ -91,6 +91,21 @@ class PositionalEncoding(nn.Module):
     def forward(self, x):
         x = x + (self.pe[:x.shape[0]])
         return self.dropout(x)
+
+class PositionalEmbedding(torch.nn.Module):
+    def __init__(self, dim, dropout: float):
+        super(PositionalEmbedding, self).__init__()
+
+        self.dim = dim
+        self.dropout = nn.Dropout(p=dropout)
+        inv_freq = 1 / (10000 ** (torch.arange(0.0, dim, 2.0) / dim))
+        self.register_buffer("inv_freq", inv_freq)
+        
+
+    def forward(self, positions):
+        sinusoid_inp = torch.einsum("i,j->ij", positions.float(), self.inv_freq)
+        pos_emb = torch.cat([sinusoid_inp.sin(), sinusoid_inp.cos()], dim=-1)
+        return pos_emb[:, None, :]
     
 class ExtendedEmbedding(nn.Module):
     def __init__(self, input_dim, d_model, activation=nn.ReLU(), intermediate_dim=None):
@@ -119,8 +134,9 @@ class TransformerMemory(nn.Module):
 
         self.embedding = nn.Linear(input_dim, d_model)
         # self.embedding = ExtendedEmbedding(input_dim, d_model, activation, d_embed)
-        self.pos_encoder = PositionalEncoding(input_dim, dropout)
-        transformer_layer =nn.TransformerEncoderLayer(d_model=input_dim,
+        # self.pos_encoder = PositionalEncoding(d_model, dropout)
+        self.pos_encoder = PositionalEmbedding(d_model, dropout)
+        transformer_layer =nn.TransformerEncoderLayer(d_model=d_model,
                                                       nhead=num_heads,
                                                       dim_feedforward=d_ff,
                                                       dropout=dropout
@@ -148,7 +164,13 @@ class TransformerMemory(nn.Module):
 
         # Embed the input (seq_len, batch_size, num_obs) --> (seq_len, batch_size, d_model)
         x = self.embedding(x)
-        x = self.pos_encoder(x) # (seq_len, batch_size, d_model)
+        # x = self.pos_encoder(x) # (seq_len, batch_size, d_model)
+
+        pos_ips = torch.arange(seq_len - 1, -1, -1.0, dtype=torch.float).to(
+            x.device
+        )
+        
+        x = x + self.pos_encoder(pos_ips)    # (seq_len x batch x d_model)
 
         # Pass through the transformer.
         x = self.transformer_encoder(x, mask=causal_mask, src_key_padding_mask=reset_masks)   # (seq_len, batch_size, d_model)
