@@ -58,16 +58,16 @@ class ActorCriticTransformer(ActorCritic):
         print(f"Actor Transformer: {self.memory_a}")
         print(f"Critic Transformer: {self.memory_c}")
 
-    def act(self, observations, masks=None, **kwargs):
-        input_a = self.memory_a(observations, masks)
+    def act(self, observations, masks=None, reset_masks=None, **kwargs):
+        input_a = self.memory_a(observations, masks, reset_masks)
         return super().act(input_a.squeeze(0))
 
     def act_inference(self, observations):
         input_a = self.memory_a(observations)['logits']
         return super().act_inference(input_a.squeeze(0))
 
-    def evaluate(self, critic_observations, masks=None, **kwargs):
-        input_c = self.memory_c(critic_observations, masks)
+    def evaluate(self, critic_observations, masks=None, reset_masks=None, **kwargs):
+        input_c = self.memory_c(critic_observations, masks, reset_masks)
         return super().evaluate(input_c.squeeze(0))
     
     def init_memory(self, device=torch.device("cpu")):
@@ -170,7 +170,7 @@ class MultiHeadAttentionXL(torch.nn.Module):
     #         .view_as(x)
     #     )
 
-    def forward(self, input_, pos_embs, u, v, mask=None):
+    def forward(self, input_, pos_embs, u, v, mask=None, padding_mask=None):
         """
         + pos_embs: positional embeddings passed separately to handle relative positions.
         + Arguments
@@ -180,6 +180,7 @@ class MultiHeadAttentionXL(torch.nn.Module):
             - u: torch.FloatTensor, shape - (num_heads, inner_dim) = (3 x )
             - v: torch.FloatTensor, shape - (num_heads, inner_dim)
             - mask: torch.FloatTensor, Optional = (20, 40, 1)
+            - padding_mask: torch.FloatTensor, Optional = (seq_len, batch_size, 1)
 
         + Returns
             - output: torch.FloatTensor, shape - (seq, bs, self.d_input)
@@ -229,6 +230,15 @@ class MultiHeadAttentionXL(torch.nn.Module):
         if mask is not None and mask.any().item():
             # fills float('-inf') where mask is True.
             attn = attn.masked_fill(mask[..., None], -float("inf"))
+
+        if padding_mask is not None and padding_mask.any().item():
+            # Broadcast padding_mask to match attn shape and fill with -inf where mask is True
+            padding_mask = padding_mask.unsqueeze(0).unsqueeze(-1)  # (1, seq_len, batch_size, 1)
+            padding_mask = padding_mask.expand(attn.size(0), -1, -1, H)  # (seq_len, seq_len, batch_size, num_heads)
+
+            # Apply the mask to attention scores
+            attn = attn.masked_fill((padding_mask==0), -float("inf"))
+
         # rescale to prevent values from exploding.
         # normalize across the value sequence dimension.
         attn = torch.softmax(attn * self.scale, dim=1)
@@ -280,9 +290,9 @@ class StableTransformerEncoderLayerXL(torch.nn.Module):
         self.norm1 = torch.nn.LayerNorm(d_input)
         self.norm2 = torch.nn.LayerNorm(d_input)
 
-    def forward(self, input_, pos_embs, u, v, mask=None):
+    def forward(self, input_, pos_embs, u, v, mask=None, padding_mask=None):
         src2 = self.norm1(input_)
-        src2 = self.mha(src2, pos_embs, u, v, mask=mask)
+        src2 = self.mha(src2, pos_embs, u, v, mask=mask, padding_mask=padding_mask)
         src = self.gate1(input_, src2) if self.gating else input_ + src2
         src2 = self.ff(self.norm2(src))
         src = self.gate2(src, src2) if self.gating else src + src2
@@ -333,7 +343,7 @@ class StableTransformerXL(torch.nn.Module):
             torch.nn.Parameter(torch.zeros(self.n_heads, self.d_head_inner)),
         )
 
-    def forward(self, inputs, masks=None):
+    def forward(self, inputs, masks=None, reset_masks=None):
         """
         + Arguments
             - inputs - torch.FloatTensor = [seq_len x B x d_inner] = [20 x 5 x 8]
@@ -368,7 +378,8 @@ class StableTransformerXL(torch.nn.Module):
                 pos_embs,
                 self.u,
                 self.v,
-                mask=dec_attn_mask
+                mask=dec_attn_mask,
+                padding_mask=reset_masks
             )
 
         if masks is not None:
