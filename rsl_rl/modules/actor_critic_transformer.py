@@ -69,17 +69,6 @@ class ActorCriticTransformer(ActorCritic):
     def evaluate(self, critic_observations, masks=None, reset_masks=None, **kwargs):
         input_c = self.memory_c(critic_observations, masks, reset_masks)
         return super().evaluate(input_c.squeeze(0))
-    
-    def init_memory(self, device=torch.device("cpu")):
-        self.memory_act = self.memory_a.init_memory(device)
-        self.memory_eval = self.memory_c.init_memory(device)
-    
-    def get_memory(self):
-        return self.memory_act, self.memory_eval
-
-    def reset_memory_for_batch(self, batch_index, device=torch.device("cpu")):
-        self.memory_act = self.memory_a.reset_memory_for_batch(self.memory_act, batch_index, device)
-        self.memory_eval = self.memory_c.reset_memory_for_batch(self.memory_eval, batch_index, device)
 
 class PositionalEmbedding(torch.nn.Module):
     def __init__(self, dim):
@@ -229,15 +218,14 @@ class MultiHeadAttentionXL(torch.nn.Module):
 
         if mask is not None and mask.any().item():
             # fills float('-inf') where mask is True.
-            attn = attn.masked_fill(mask[..., None], -float("inf"))
+            attn = attn.masked_fill(mask[..., None], -1e9)
 
         if padding_mask is not None and padding_mask.any().item():
             # Broadcast padding_mask to match attn shape and fill with -inf where mask is True
-            padding_mask = padding_mask.unsqueeze(0).unsqueeze(-1)  # (1, seq_len, batch_size, 1)
-            padding_mask = padding_mask.expand(attn.size(0), -1, -1, H)  # (seq_len, seq_len, batch_size, num_heads)
+            padding_mask = padding_mask.unsqueeze(0).expand(attn.size(0), -1, -1, H)  # (seq_len, seq_len, batch_size, num_heads)
 
             # Apply the mask to attention scores
-            attn = attn.masked_fill((padding_mask==0), -float("inf"))
+            attn = attn.masked_fill((padding_mask==0), -1e9)
 
         # rescale to prevent values from exploding.
         # normalize across the value sequence dimension.
@@ -378,8 +366,7 @@ class StableTransformerXL(torch.nn.Module):
                 pos_embs,
                 self.u,
                 self.v,
-                mask=dec_attn_mask,
-                padding_mask=reset_masks
+                mask=dec_attn_mask
             )
 
         if masks is not None:

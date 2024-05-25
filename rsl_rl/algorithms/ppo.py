@@ -145,9 +145,6 @@ class PPO:
             hid_states_batch,
             masks_batch,
         ) in generator:
-            # if self.actor_critic.model_name == 'transformer':
-            #     # Reset memory for each batch
-            #     self.actor_critic.init_memory(self.device)
             self.actor_critic.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
             actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
             value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1]

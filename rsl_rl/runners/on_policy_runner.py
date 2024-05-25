@@ -87,14 +87,14 @@ class OnPolicyRunner:
         # (seq_len, Batch, d)
         return obs_seq, critic_obs_seq, action_seq, mask_seq
 
-    def reset_buffers(self, env_idx, obs, critic_obs):
+    def reset_buffers(self, env_idx, obs, critic_obs, num_steps=0):
         # Clear buffers if the environment is done
         self.observation_buffers[env_idx].clear()
         self.critic_observation_buffers[env_idx].clear()
         self.action_buffers[env_idx].clear()
         self.mask_buffers[env_idx].clear()
 
-        # Initialize buffers with zeros
+        # Initialize buffers with zeros up to steps
         for _ in range(self.num_steps_per_env):
             self.observation_buffers[env_idx].append(torch.zeros_like(obs[env_idx]))
             self.critic_observation_buffers[env_idx].append(torch.zeros_like(critic_obs[env_idx]))
@@ -102,12 +102,12 @@ class OnPolicyRunner:
             self.mask_buffers[env_idx].append(torch.zeros(1, dtype=torch.int, device=self.device))  # Mask set to 0 for padding
 
 
-    def update_buffers(self, obs, critic_obs, prev_actions=None, dones=None):
+    def update_buffers(self, obs, critic_obs, prev_actions=None, dones=None, num_steps=0):
         for env_idx in range(self.env.num_envs):
             # Check if the environment has been reset
             if dones is not None and dones[env_idx]:
                 # Reset buffers for done environments
-                self.reset_buffers(env_idx, obs, critic_obs)
+                self.reset_buffers(env_idx, obs, critic_obs, num_steps=num_steps)
             else:
                 # For non-done environments, update the buffers normally
                 if prev_actions is not None:
@@ -158,7 +158,6 @@ class OnPolicyRunner:
         cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
-        # If using transformer, initialize observation and action buffers for each environment
         if self.model_name == 'transformer':
             for env_idx in range(self.env.num_envs):
                 self.reset_buffers(env_idx, obs, critic_obs)
@@ -167,6 +166,11 @@ class OnPolicyRunner:
         start_iter = self.current_learning_iteration
         tot_iter = start_iter + num_learning_iterations
         for it in range(start_iter, tot_iter):
+            # if self.model_name == 'transformer':
+            #     # Reset buffers for the first iteration
+            #     for env_idx in range(self.env.num_envs):
+            #         self.reset_buffers(env_idx, obs, critic_obs, num_steps=0)
+            #     self.update_buffers(obs, critic_obs)
             start = time.time()
             # Rollout
             with torch.inference_mode():
@@ -197,7 +201,7 @@ class OnPolicyRunner:
                     )
 
                     if self.model_name == 'transformer':
-                        self.update_buffers(obs, critic_obs, actions, dones)
+                        self.update_buffers(obs, critic_obs, actions, dones, i+1)
 
                     self.alg.process_env_step(rewards, dones, infos)
 
