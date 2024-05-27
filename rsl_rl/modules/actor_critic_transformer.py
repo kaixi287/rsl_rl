@@ -136,8 +136,13 @@ class MultiHeadAttentionBlock(nn.Module):
         if padding_mask is not None:
             # padding mask: (seq_len, batch, 1) --> (batch, seq_len)
             padding_mask = padding_mask.transpose(0, 1).squeeze(-1)
-            padding_mask = padding_mask.view(batch_size, 1, 1, seq_len).expand(-1, h, -1, -1)
-            attention_scores.masked_fill_((padding_mask==0), -1e9)
+            padding_mask = padding_mask.unsqueeze(1).expand(batch_size, h, seq_len)
+            
+            # Create a mask for the last element in the sequence
+            last_elem_mask = torch.zeros_like(attention_scores).bool()
+            last_elem_mask[:, :, -1, :] = (padding_mask==0)
+
+            attention_scores.masked_fill_(last_elem_mask, -1e9)
         attention_scores = attention_scores.softmax(dim=-1) # (batch, h, seq_len, seq_len) # Apply softmax
         if dropout is not None:
             attention_scores = dropout(attention_scores)
