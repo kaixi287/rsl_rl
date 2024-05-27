@@ -159,19 +159,15 @@ class OnPolicyRunner:
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
         # If using transformer, initialize observation and action buffers for each environment
-        # if self.model_name == 'transformer':
-        #     for env_idx in range(self.env.num_envs):
-        #         self.reset_buffers(env_idx, obs, critic_obs)
-        #     self.update_buffers(obs, critic_obs)
+        if self.model_name == 'transformer':
+            for env_idx in range(self.env.num_envs):
+                self.reset_buffers(env_idx, obs, critic_obs)
+            self.update_buffers(obs, critic_obs)
 
         start_iter = self.current_learning_iteration
         tot_iter = start_iter + num_learning_iterations
         for it in range(start_iter, tot_iter):
             start = time.time()
-            if self.model_name == 'transformer':
-                for env_idx in range(self.env.num_envs):
-                    self.reset_buffers(env_idx, obs, critic_obs)
-                self.update_buffers(obs, critic_obs)
             # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
