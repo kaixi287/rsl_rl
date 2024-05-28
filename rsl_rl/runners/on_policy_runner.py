@@ -42,18 +42,12 @@ class OnPolicyRunner:
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
         self.empirical_normalization = self.cfg["empirical_normalization"]
-        self.observation_only = self.policy_cfg["observation_only"]
         if self.empirical_normalization:
             self.obs_normalizer = EmpiricalNormalization(shape=[num_obs], until=1.0e8).to(self.device)
             self.critic_obs_normalizer = EmpiricalNormalization(shape=[num_critic_obs], until=1.0e8).to(self.device)
         else:
             self.obs_normalizer = torch.nn.Identity()  # no normalization
-            self.critic_obs_normalizer = torch.nn.Identity()  # no normalization
-        
-        # Check if using observation only or observation-action pair as input
-        if not self.observation_only:
-            num_obs += self.env.num_actions
-            num_critic_obs += self.env.num_actions
+            self.critic_obs_normalizer = torch.nn.Identity()  # no normalization      
 
         # init storage and model
         self.alg.init_storage(
@@ -68,7 +62,6 @@ class OnPolicyRunner:
         if self.model_name == 'transformer':
             self.observation_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
             self.critic_observation_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
-            self.action_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
             self.mask_buffers = [deque(maxlen=self.num_steps_per_env) for _ in range(self.env.num_envs)]
 
         # Log
@@ -82,42 +75,33 @@ class OnPolicyRunner:
     def prepare_sequences(self):
         obs_seq = torch.stack([torch.stack(list(buf)) for buf in self.observation_buffers]).transpose(0, 1)
         critic_obs_seq = torch.stack([torch.stack(list(buf)) for buf in self.critic_observation_buffers]).transpose(0, 1)
-        action_seq = torch.stack([torch.stack(list(buf)) for buf in self.action_buffers]).transpose(0, 1)
         mask_seq = torch.stack([torch.stack(list(buf)) for buf in self.mask_buffers]).transpose(0, 1)  # Ensure mask is float for multiplication purposes
         # (seq_len, Batch, d)
-        return obs_seq, critic_obs_seq, action_seq, mask_seq
+        return obs_seq, critic_obs_seq, mask_seq
 
     def reset_buffers(self, env_idx, obs, critic_obs, num_steps=0):
         # Clear buffers if the environment is done
         self.observation_buffers[env_idx].clear()
         self.critic_observation_buffers[env_idx].clear()
-        self.action_buffers[env_idx].clear()
         self.mask_buffers[env_idx].clear()
 
         # Initialize buffers with zeros
         for _ in range(self.num_steps_per_env):
             self.observation_buffers[env_idx].append(torch.zeros_like(obs[env_idx]))
             self.critic_observation_buffers[env_idx].append(torch.zeros_like(critic_obs[env_idx]))
-            self.action_buffers[env_idx].append(torch.zeros(self.env.num_actions, device=self.device))
             self.mask_buffers[env_idx].append(torch.zeros(1, dtype=torch.int, device=self.device))  # Mask set to 0 for padding
 
 
-    def update_buffers(self, obs, critic_obs, prev_actions=None, dones=None, num_steps=0):
+    def update_buffers(self, obs, critic_obs, dones=None, num_steps=0):
         for env_idx in range(self.env.num_envs):
             # Check if the environment has been reset
             if dones is not None and dones[env_idx]:
                 # Reset buffers for done environments
                 self.reset_buffers(env_idx, obs, critic_obs, num_steps)
-            else:
-                # For non-done environments, update the buffers normally
-                if prev_actions is not None:
-                    # Update the last action buffer item with the previous actions
-                    self.action_buffers[env_idx][-1] = prev_actions[env_idx]
 
             # Append new observations and a placeholder for the new action
             self.observation_buffers[env_idx].append(obs[env_idx])
             self.critic_observation_buffers[env_idx].append(critic_obs[env_idx])
-            self.action_buffers[env_idx].append(torch.zeros(self.env.num_actions, device=self.device))
             self.mask_buffers[env_idx].append(torch.ones(1, dtype=torch.int, device=self.device))  # Updating mask to 1 for real data
 
 
@@ -172,15 +156,8 @@ class OnPolicyRunner:
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
                     if self.model_name == 'transformer':
-                        action_seq = None
-                        sequences = self.prepare_sequences()
-                        
-                        if self.observation_only:
-                            obs_seq, critic_obs_seq, _, mask_seq = sequences
-                        else:
-                            obs_seq, critic_obs_seq, action_seq, mask_seq = sequences
-
-                        actions = self.alg.act(obs_seq, critic_obs_seq, action_seq, mask_seq)
+                        obs_seq, critic_obs_seq, mask_seq = self.prepare_sequences()
+                        actions = self.alg.act(obs_seq, critic_obs_seq, mask_seq)
                     else:
                         actions = self.alg.act(obs, critic_obs)
                     obs, rewards, dones, infos = self.env.step(actions)
@@ -197,7 +174,7 @@ class OnPolicyRunner:
                     )
 
                     if self.model_name == 'transformer':
-                        self.update_buffers(obs, critic_obs, actions, dones, i+1)
+                        self.update_buffers(obs, critic_obs, dones, i+1)
 
                     self.alg.process_env_step(rewards, dones, infos)
 
@@ -223,15 +200,8 @@ class OnPolicyRunner:
                 # Learning step
                 start = stop
                 if self.model_name == 'transformer':
-                    action_seq = None
-                    sequences = self.prepare_sequences()
-
-                    if self.observation_only:
-                        _, critic_obs_seq, _, mask_seq = sequences
-                    else:
-                        _, critic_obs_seq, action_seq, mask_seq = sequences
-
-                    self.alg.compute_returns(critic_obs_seq, action_seq, mask_seq)
+                    _, critic_obs_seq, mask_seq = self.prepare_sequences()
+                    self.alg.compute_returns(critic_obs_seq, mask_seq)
                 else:
                     self.alg.compute_returns(critic_obs)
 
