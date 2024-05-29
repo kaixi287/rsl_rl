@@ -66,7 +66,7 @@ class PPO:
     def train_mode(self):
         self.actor_critic.train()
 
-    def act(self, obs, critic_obs, actions=None, reset_masks=None):
+    def act(self, obs, critic_obs, reset_masks=None):
         if self.actor_critic.model_name == "rnn":
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
 
