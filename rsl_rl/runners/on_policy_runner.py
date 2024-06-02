@@ -7,6 +7,7 @@ import os
 import statistics
 import time
 import torch
+import torch.nn as nn
 from collections import deque
 from torch.utils.tensorboard import SummaryWriter as TensorboardSummaryWriter
 
@@ -17,15 +18,24 @@ from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, EmpiricalNormaliza
 from rsl_rl.utils import store_code_state
 
 
+from omni.isaac.orbit_assets.anymal import ANYMAL_D_CFG, ANYMAL_C_CFG  # isort: skip
+from omni.isaac.orbit_assets.unitree import UNITREE_A1_CFG, UNITREE_GO1_CFG, UNITREE_GO2_CFG  # isort: skip
+
+
 class OnPolicyRunner:
     """On-policy runner for training and evaluation."""
 
-    def __init__(self, env: VecEnv, train_cfg, log_dir=None, device="cpu"):
+    def __init__(self, env, tasks, train_cfg, log_dir=None, device="cpu"):
         self.cfg = train_cfg
         self.alg_cfg = train_cfg["algorithm"]
         self.policy_cfg = train_cfg["policy"]
         self.device = device
         self.env = env
+        self.tasks = tasks
+
+        self.current_task_idx = 0
+        self.current_task_id = 0
+
         obs, extras = self.env.get_observations()
         num_obs = obs.shape[1]
         if "critic" in extras["observations"]:
@@ -38,6 +48,11 @@ class OnPolicyRunner:
         ).to(self.device)
         alg_class = eval(self.alg_cfg.pop("class_name"))  # PPO
         self.alg: PPO = alg_class(actor_critic, device=self.device, **self.alg_cfg)
+        self.num_inner_iterations = self.cfg["num_inner_iterations"]
+        self.num_meta_iterations = self.cfg["max_iterations"]
+        self.num_tasks_per_meta_update = self.cfg["num_tasks_per_meta_update"]
+        assert self.num_tasks_per_meta_update <= len(self.tasks)
+
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
         self.empirical_normalization = self.cfg["empirical_normalization"]
@@ -61,10 +76,28 @@ class OnPolicyRunner:
         self.writer = None
         self.tot_timesteps = 0
         self.tot_time = 0
-        self.current_learning_iteration = 0
+        self.current_meta_iteration = 0
+        self.current_inner_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
+    
+    def change_robot(self, task):
+        if "anymal-c" in task.lower():
+            robot_cfg = ANYMAL_C_CFG
+        elif "anymal-d" in task.lower():
+            robot_cfg = ANYMAL_D_CFG
+        elif "unitree-a1" in task.lower():
+            robot_cfg = UNITREE_A1_CFG
+        elif "unitree-go1" in task.lower():
+            robot_cfg = UNITREE_GO1_CFG
+        elif "unitree-go2" in task.lower():
+            robot_cfg = UNITREE_GO2_CFG
+        else:
+            raise ValueError(f"Unknown task {task}")
 
-    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):
+        self.env.unwrapped.scene.robot = robot_cfg.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        self.env.reset()
+
+    def learn(self, init_at_random_ep_len: bool = False):
         # initialize writer
         if self.log_dir is not None and self.writer is None:
             # Launch either Tensorboard or Neptune & Tensorboard summary writer(s), default: Tensorboard.
@@ -85,6 +118,41 @@ class OnPolicyRunner:
                 self.writer = TensorboardSummaryWriter(log_dir=self.log_dir, flush_secs=10)
             else:
                 raise AssertionError("logger type not found")
+        
+        start_meta_iter = self.current_meta_iteration
+        tot_meta_iter = start_meta_iter + self.num_meta_iterations
+        for meta_iteration in range(start_meta_iter, tot_meta_iter):
+            self.current_meta_iteration = meta_iteration
+            # Sample tasks and run inner RL loop for each task
+            task_ids = torch.randperm(len(self.tasks))[:self.num_tasks_per_meta_update]
+            for idx, task_id in enumerate(task_ids):
+                self.current_task_idx = idx
+                self.current_task_id = task_id.item()
+                self.run_inner_loop(init_at_random_ep_len)
+
+            # Meta update: compute meta-gradient based on accumulated experiences across tasks and update policy
+            self.meta_update()
+
+            if meta_iteration % self.save_interval == 0:
+                self.save(os.path.join(self.log_dir, f"model_{self.current_meta_iteration}.pt"))
+            
+            if meta_iteration == start_meta_iter:
+                # obtain all the diff files
+                git_file_paths = store_code_state(self.log_dir, self.git_status_repos)
+                # if possible store them to wandb
+                if self.logger_type in ["wandb", "neptune"] and git_file_paths:
+                    for path in git_file_paths:
+                        self.writer.save_file(path)
+        
+        self.save(os.path.join(self.log_dir, f"model_{tot_meta_iter}.pt"))
+    
+    def run_inner_loop(self, init_at_random_ep_len: bool = False):
+        
+        # Change robot for the current task
+        self.change_robot(self.tasks[self.current_task_id])
+
+        # Clear storage
+        self.alg.clear_storage()
 
         if init_at_random_ep_len:
             self.env.episode_length_buf = torch.randint_like(
@@ -101,8 +169,8 @@ class OnPolicyRunner:
         cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
-        start_iter = self.current_learning_iteration
-        tot_iter = start_iter + num_learning_iterations
+        start_iter = self.current_inner_iteration
+        tot_iter = start_iter + self.num_inner_iterations
         for it in range(start_iter, tot_iter):
             start = time.time()
             # Rollout
@@ -146,24 +214,96 @@ class OnPolicyRunner:
                 start = stop
                 self.alg.compute_returns(critic_obs)
 
-            mean_value_loss, mean_surrogate_loss = self.alg.update()
+            mean_value_loss, mean_surrogate_loss, _ = self.alg.compute_and_update(do_update=True)
+            mean_value_loss = mean_value_loss.detach().item()
+            mean_surrogate_loss = mean_surrogate_loss.detach().item()
             stop = time.time()
             learn_time = stop - start
-            self.current_learning_iteration = it
+            self.current_inner_iteration = it
             if self.log_dir is not None:
                 self.log(locals())
-            if it % self.save_interval == 0:
-                self.save(os.path.join(self.log_dir, f"model_{it}.pt"))
             ep_infos.clear()
-            if it == start_iter:
-                # obtain all the diff files
-                git_file_paths = store_code_state(self.log_dir, self.git_status_repos)
-                # if possible store them to wandb
-                if self.logger_type in ["wandb", "neptune"] and git_file_paths:
-                    for path in git_file_paths:
-                        self.writer.save_file(path)
 
-        self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"))
+            # Reset rnn hidden states
+            self.alg.actor_critic.reset()
+
+
+    def meta_update(self):
+        # Aggregate gradients from each task and udpate the meta-policy
+        self.alg.actor_critic.zero_grad()
+
+        mean_value_loss = 0.0
+        mean_surrogate_loss = 0.0
+        mean_entropy_loss = 0.0
+
+        for task in self.tasks:
+            self.change_robot(task)
+            obs, extras = self.env.get_observations()
+            critic_obs = extras["observations"].get("critic", obs)
+            obs, critic_obs = obs.to(self.device), critic_obs.to(self.device)
+
+            with torch.inference_mode():
+                for _ in range(self.num_steps_per_env):
+                    actions = self.alg.act(obs, critic_obs)
+                    obs, rewards, dones, infos = self.env.step(actions)
+                    obs = self.obs_normalizer(obs)
+                    if "critic" in infos["observations"]:
+                        critic_obs = self.critic_obs_normalizer(infos["observations"]["critic"])
+                    else:
+                        critic_obs = obs
+                    obs, critic_obs, rewards, dones = (
+                        obs.to(self.device),
+                        critic_obs.to(self.device),
+                        rewards.to(self.device),
+                        dones.to(self.device),
+                    )
+                    self.alg.process_env_step(rewards, dones, infos)
+
+                # Compute gradients for the task
+                self.alg.compute_returns(critic_obs)
+
+            # Compute gradients for the task
+            self.alg.compute_returns(critic_obs)
+            value_loss, surrogate_loss, entropy_loss = self.alg.compute_and_update(do_update=False)
+
+            total_loss = self.alg.value_loss_coef * value_loss + surrogate_loss - self.alg.entropy_coef * entropy_loss
+            total_loss.backward()
+
+            mean_value_loss += value_loss.item()
+            mean_surrogate_loss += surrogate_loss.item()
+            mean_entropy_loss += entropy_loss.item()
+
+        # Apply aggregated meta-gradients
+        nn.utils.clip_grad_norm_(self.alg.actor_critic.parameters(), self.alg.max_grad_norm)
+        self.alg.optimizer.step()
+
+        # Log meta-update information
+        if self.log_dir is not None:
+            self.log_meta_update({
+                'mean_value_loss': mean_value_loss / len(self.tasks),
+                'mean_surrogate_loss': mean_surrogate_loss / len(self.tasks),
+                'mean_entropy_loss': mean_entropy_loss / len(self.tasks),
+            })
+
+    def log_meta_update(self, locs: dict, width: int = 80, pad: int = 35):
+        mean_value_loss = locs['mean_value_loss']
+        mean_surrogate_loss = locs['mean_surrogate_loss']
+        mean_entropy_loss = locs['mean_entropy_loss']
+
+        self.writer.add_scalar("MetaUpdate/mean_value_loss", mean_value_loss, self.current_meta_iteration)
+        self.writer.add_scalar("MetaUpdate/mean_surrogate_loss", mean_surrogate_loss, self.current_meta_iteration)
+        self.writer.add_scalar("MetaUpdate/mean_entropy_loss", mean_entropy_loss, self.current_meta_iteration)
+
+        log_string = (
+            f"""{'#' * width}\n"""
+            f""" \033[1m Meta-update {self.current_meta_iteration}/{self.num_meta_iterations} \033[0m \n"""
+            f"""{'Mean value function loss:':>{pad}} {mean_value_loss:.4f}\n"""
+            f"""{'Mean surrogate loss:':>{pad}} {mean_surrogate_loss:.4f}\n"""
+            f"""{'Mean entropy loss:':>{pad}} {mean_entropy_loss:.4f}\n"""
+            f"""{'-' * width}\n"""
+        )
+        print(log_string)
+
 
     def log(self, locs: dict, width: int = 80, pad: int = 35):
         self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
@@ -210,12 +350,14 @@ class OnPolicyRunner:
                     "Train/mean_episode_length/time", statistics.mean(locs["lenbuffer"]), self.tot_time
                 )
 
-        str = f" \033[1m Learning iteration {locs['it']}/{locs['tot_iter']} \033[0m "
+        meta_iter_info = f"\033[1m Meta iteration {self.current_meta_iteration}/{self.num_meta_iterations} Task {self.current_task_idx+1}/{self.num_tasks_per_meta_update} \033[0m\n"
+        inner_iter_info = f" \033[1m Learning iteration {locs['it']}/{locs['tot_iter']} \033[0m "
 
         if len(locs["rewbuffer"]) > 0:
             log_string = (
                 f"""{'#' * width}\n"""
-                f"""{str.center(width, ' ')}\n\n"""
+                f"""{meta_iter_info.center(width, ' ')}\n"""
+                f"""{inner_iter_info.center(width, ' ')}\n\n"""
                 f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
                             'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
                 f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
@@ -229,7 +371,8 @@ class OnPolicyRunner:
         else:
             log_string = (
                 f"""{'#' * width}\n"""
-                f"""{str.center(width, ' ')}\n\n"""
+                f"""{meta_iter_info.center(width, ' ')}\n\n"""
+                f"""{inner_iter_info.center(width, ' ')}\n\n"""
                 f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
                             'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
                 f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
@@ -246,7 +389,7 @@ class OnPolicyRunner:
             f"""{'Iteration time:':>{pad}} {iteration_time:.2f}s\n"""
             f"""{'Total time:':>{pad}} {self.tot_time:.2f}s\n"""
             f"""{'ETA:':>{pad}} {self.tot_time / (locs['it'] + 1) * (
-                               locs['num_learning_iterations'] - locs['it']):.1f}s\n"""
+                               self.num_inner_iterations - locs['it']):.1f}s\n"""
         )
         print(log_string)
 
@@ -254,7 +397,7 @@ class OnPolicyRunner:
         saved_dict = {
             "model_state_dict": self.alg.actor_critic.state_dict(),
             "optimizer_state_dict": self.alg.optimizer.state_dict(),
-            "iter": self.current_learning_iteration,
+            "meta_iter": self.current_meta_iteration,
             "infos": infos,
         }
         if self.empirical_normalization:
@@ -264,7 +407,7 @@ class OnPolicyRunner:
 
         # Upload model to external logging service
         if self.logger_type in ["neptune", "wandb"]:
-            self.writer.save_model(path, self.current_learning_iteration)
+            self.writer.save_model(path, self.current_meta_iteration)
 
     def load(self, path, load_optimizer=True):
         loaded_dict = torch.load(path)
@@ -274,7 +417,7 @@ class OnPolicyRunner:
             self.critic_obs_normalizer.load_state_dict(loaded_dict["critic_obs_norm_state_dict"])
         if load_optimizer:
             self.alg.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
-        self.current_learning_iteration = loaded_dict["iter"]
+        self.current_meta_iteration = loaded_dict["meta_iter"]
         return loaded_dict["infos"]
 
     def get_inference_policy(self, device=None):
