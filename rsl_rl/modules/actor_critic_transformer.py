@@ -218,18 +218,17 @@ class MultiHeadAttentionXL(torch.nn.Module):
 
         if mask is not None and mask.any().item():
             # fills float('-inf') where mask is True.
-            attn = attn.masked_fill(mask[..., None], -1e9)
+            attn = attn.masked_fill(mask[..., None], -float('inf'))
 
         if padding_mask is not None and padding_mask.any().item():
             # Broadcast padding_mask to match attn shape and fill with -inf where mask is True
-            padding_mask = padding_mask.expand(-1, -1, H)  # (seq_len, batch_size, num_heads)
-
-            # Create a mask for the last element in the sequence
-            last_elem_mask = torch.zeros_like(attn).bool()
-            last_elem_mask[-1, :, :, :] = (padding_mask==0)
+            padding_mask = padding_mask.repeat(1, 1, H)  # (seq_len, batch_size, num_heads)
+            padding_mask = padding_mask.unsqueeze(0).repeat(cur_seq, 1, 1, 1)  # (seq_len, seq_len, batch_size, num_heads)
 
             # Apply the mask to attention scores
-            attn = attn.masked_fill(last_elem_mask, -1e9)
+            attn = attn.masked_fill(padding_mask==0, -float('inf'))
+            inf_mask = (~torch.isinf(attn)).sum(dim=1).to(bool).unsqueeze(1).repeat(1, cur_seq 1, 1)
+            attn = attn.masked_fill_(~inf_mask, 1)
 
         # rescale to prevent values from exploding.
         # normalize across the value sequence dimension.
@@ -371,7 +370,7 @@ class StableTransformerXL(torch.nn.Module):
                 self.u,
                 self.v,
                 mask=dec_attn_mask,
-                # padding_mask=reset_masks
+                padding_mask=reset_masks
             )
 
         if masks is not None:
