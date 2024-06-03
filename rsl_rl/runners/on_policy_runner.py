@@ -162,8 +162,92 @@ class OnPolicyRunner:
                 if self.logger_type in ["wandb", "neptune"] and git_file_paths:
                     for path in git_file_paths:
                         self.writer.save_file(path)
-
+        self.evaluate(self.env, num_eval_envs=10)
         self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"))
+    
+    def evaluate(self, eval_env_factory: VecEnv, num_num_eval_envsenvs: int = 10):
+        """Evaluate the current policy on a set of new environments."""
+        self.eval_mode()  # switch to evaluation mode (dropout for example)
+        
+        # Create a new evaluation environment with the specified number of environments
+        eval_env = eval_env_factory(num_eval_envs)
+
+        ep_infos = []
+        rewbuffer = deque(maxlen=100)
+        lenbuffer = deque(maxlen=100)
+        
+        # Define the joint disable configurations
+        joint_disable_configs = [0, 1, 2]
+        
+        # Initialize variables for evaluation
+        obs, extras = eval_env.get_observations()
+        critic_obs = extras["observations"].get("critic", obs)
+        obs, critic_obs = obs.to(self.device), critic_obs.to(self.device)
+        
+        for config in joint_disable_configs:
+            event_manager = eval_env.unwrapped.event_manager
+            event_cfg = event_manager.get_term_cfg('disable_random_joints')
+            event_cfg.params["num_joints_to_disable"] = config
+            event_cfg.params["disable_random_num_joints"] = False
+            event_manager.set_term_cfg('disable_random_joints', event_cfg)
+
+            eval_env.reset()
+            
+            cur_reward_sum = torch.zeros(eval_env.num_envs, dtype=torch.float, device=self.device)
+            cur_episode_length = torch.zeros(eval_env.num_envs, dtype=torch.float, device=self.device)
+            done = torch.zeros(eval_env.num_envs, dtype=torch.bool, device=self.device)
+            
+            while not torch.all(done):
+                with torch.inference_mode():
+                    actions = self.alg.act(obs, critic_obs)
+                    obs, rewards, dones, infos = eval_env.step(actions)
+                    obs = self.obs_normalizer(obs)
+                    if "critic" in infos["observations"]:
+                        critic_obs = self.critic_obs_normalizer(infos["observations"]["critic"])
+                    else:
+                        critic_obs = obs
+                    obs, critic_obs, rewards, dones = (
+                        obs.to(self.device),
+                        critic_obs.to(self.device),
+                        rewards.to(self.device),
+                        dones.to(self.device),
+                    )
+
+                    done |= dones.to(torch.bool)
+
+                    cur_reward_sum += rewards
+                    cur_episode_length += 1
+                    new_ids = (dones > 0).nonzero(as_tuple=False)
+                    rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
+                    lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
+                    cur_reward_sum[new_ids] = 0
+                    cur_episode_length[new_ids] = 0
+
+                    if "episode" in infos:
+                        ep_infos.append(infos["episode"])
+                    elif "log" in infos:
+                        ep_infos.append(infos["log"])
+
+            rewbuffer.extend(cur_reward_sum.cpu().numpy().tolist())
+            lenbuffer.extend(cur_episode_length.cpu().numpy().tolist())
+            cur_reward_sum.fill_(0)
+            cur_episode_length.fill_(0)
+        
+        # Log evaluation results for each configuration
+        for config in joint_disable_configs:
+            mean_reward = statistics.mean(rewbuffer[config])
+            mean_length = statistics.mean(lenbuffer[config])
+            print(f"Evaluation results for {config} disabled joints - Mean Reward: {mean_reward}, Mean Episode Length: {mean_length}")
+        if self.log_dir is not None:
+            self.writer.add_scalar("Eval/mean_reward", mean_reward, self.current_learning_iteration)
+            self.writer.add_scalar("Eval/mean_episode_length", mean_length, self.current_learning_iteration)
+
+    def create_eval_env(num_eval_envs: int):
+        eval_env_cfg = copy.deepcopy(self.env.cfg)  # Assuming self.env_cfg exists and is the configuration used for training
+        eval_env_cfg["num_envs"] = num_eval_envs
+        eval_env = gym.make(self.env_id, cfg=eval_env_cfg)  # Assuming self.env_id exists and is the ID used for training
+        eval_env = RslRlVecEnvWrapper(eval_env)
+        return eval_env
 
     def log(self, locs: dict, width: int = 80, pad: int = 35):
         self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
