@@ -127,17 +127,20 @@ class MultiHeadAttentionBlock(nn.Module):
         attention_scores = (query @ key.transpose(-2, -1)) / math.sqrt(d_k)
         if mask is not None:
             # Write a very low value (indicating -inf) to the positions where mask == 0
-            attention_scores.masked_fill_((mask==0).unsqueeze(1), -1e9)
+            attention_scores.masked_fill_((mask==0).unsqueeze(1), -float('inf'))
         if padding_mask is not None:
             # padding mask: (seq_len, batch, 1) --> (batch, seq_len)
             padding_mask = padding_mask.transpose(0, 1).squeeze(-1)
-            padding_mask = padding_mask.unsqueeze(1).expand(batch_size, h, seq_len)
+            padding_mask = padding_mask.unsqueeze(1).repeat(1, h, 1)
             
             # Create a mask for the last element in the sequence
-            last_elem_mask = torch.zeros_like(attention_scores).bool()
-            last_elem_mask[:, :, -1, :] = (padding_mask==0)
+            # last_elem_mask = torch.zeros_like(attention_scores).bool()
+            # last_elem_mask[:, :, -1, :] = (padding_mask==0)
+            padding_mask = padding_mask.unsqueeze(-2).repeat(1, 1, seq_len, 1)
 
-            attention_scores.masked_fill_(last_elem_mask, -1e9)
+            attention_scores.masked_fill_(padding_mask==0, -float('inf'))
+            inf_mask = (~torch.isinf(attention_scores)).sum(-1).to(bool).unsqueeze(-1).repeat(1, 1, 1, seq_len)
+            attention_scores.masked_fill_(~inf_mask, 1)
         attention_scores = attention_scores.softmax(dim=-1) # (batch, h, seq_len, seq_len) # Apply softmax
         if dropout is not None:
             attention_scores = dropout(attention_scores)
@@ -236,9 +239,9 @@ class TransformerMemory(nn.Module):
     def __init__(self, input_dim, num_heads, num_layers, d_model: int = 256, d_ff: int = 1024, dropout: float = 0.1):
         super().__init__()
 
-        # self.embedding = nn.Linear(input_dim, d_model)
+        self.embedding = nn.Linear(input_dim, d_model)
         # d_model = input_dim
-        self.embedding = ExtendedEmbedding(input_dim, d_model, intermediate_dim=512)
+        # self.embedding = ExtendedEmbedding(input_dim, d_model, intermediate_dim=512)
         self.pos_encoder = PositionalEmbedding(d_model)
         self.drop = torch.nn.Dropout(dropout)
         # Create the encoder blocks

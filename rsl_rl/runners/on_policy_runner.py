@@ -79,7 +79,7 @@ class OnPolicyRunner:
         # (seq_len, Batch, d)
         return obs_seq, critic_obs_seq, mask_seq
 
-    def reset_buffers(self, env_idx, obs, critic_obs, num_steps=0):
+    def reset_buffers(self, env_idx, obs, critic_obs):
         # Clear buffers if the environment is done
         self.observation_buffers[env_idx].clear()
         self.critic_observation_buffers[env_idx].clear()
@@ -92,12 +92,12 @@ class OnPolicyRunner:
             self.mask_buffers[env_idx].append(torch.zeros(1, dtype=torch.int, device=self.device))  # Mask set to 0 for padding
 
 
-    def update_buffers(self, obs, critic_obs, dones=None, num_steps=0):
+    def update_buffers(self, obs, critic_obs, dones=None):
         for env_idx in range(self.env.num_envs):
             # Check if the environment has been reset
             if dones is not None and dones[env_idx]:
                 # Reset buffers for done environments
-                self.reset_buffers(env_idx, obs, critic_obs, num_steps)
+                self.reset_buffers(env_idx, obs, critic_obs)
 
             # Append new observations and a placeholder for the new action
             self.observation_buffers[env_idx].append(obs[env_idx])
@@ -174,7 +174,7 @@ class OnPolicyRunner:
                     )
 
                     if self.model_name == 'transformer':
-                        self.update_buffers(obs, critic_obs, dones, i+1)
+                        self.update_buffers(obs, critic_obs, dones)
 
                     self.alg.process_env_step(rewards, dones, infos)
 
