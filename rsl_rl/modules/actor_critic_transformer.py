@@ -227,8 +227,8 @@ class MultiHeadAttentionXL(torch.nn.Module):
 
             # Apply the mask to attention scores
             attn = attn.masked_fill(padding_mask==0, -float('inf'))
-            inf_mask = (~torch.isinf(attn)).sum(dim=1).to(bool).unsqueeze(1).repeat(1, cur_seq 1, 1)
-            attn = attn.masked_fill_(~inf_mask, 1)
+            inf_mask = (~torch.isinf(attn)).sum(dim=1).to(bool).unsqueeze(1).repeat(1, cur_seq, 1, 1)
+            attn = attn.masked_fill(~inf_mask, 1)
 
         # rescale to prevent values from exploding.
         # normalize across the value sequence dimension.
