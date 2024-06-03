@@ -222,7 +222,7 @@ class MultiHeadAttentionXL(torch.nn.Module):
 
         if padding_mask is not None and padding_mask.any().item():
             # Broadcast padding_mask to match attn shape and fill with -inf where mask is True
-            padding_mask = padding_mask.expand(-1, -1, H)  # (seq_len, seq_len, batch_size, num_heads)
+            padding_mask = padding_mask.expand(-1, -1, H)  # (seq_len, batch_size, num_heads)
 
             # Create a mask for the last element in the sequence
             last_elem_mask = torch.zeros_like(attn).bool()
