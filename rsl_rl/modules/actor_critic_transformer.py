@@ -83,6 +83,42 @@ class PositionalEmbedding(torch.nn.Module):
         pos_emb = torch.cat([sinusoid_inp.sin(), sinusoid_inp.cos()], dim=-1)
         return pos_emb[:, None, :]
 
+class PositionalEncoding(nn.Module):
+
+    def __init__(self, d_model: int, dropout: float, max_len: int = 50) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.dropout = nn.Dropout(dropout)
+        pe = torch.zeros(max_len, d_model)
+
+        # Create a vector of shape (max_len)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1) # (max_len, 1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)) # (d_model / 2)
+
+        pe[:, 0::2] = torch.sin(position * div_term) # sin(position * (10000 ** (2i / d_model))
+        pe[:, 1::2] = torch.cos(position * div_term) # cos(position * (10000 ** (2i / d_model))
+
+        # Add a batch dimension to the positional encoding
+        pe = pe.unsqueeze(1) # (seq_len, 1, d_model)
+
+        # Register the positional encoding as a buffer
+        self.register_buffer('pe', pe)
+
+    def forward(self, x, reset_masks=None):
+        pos_embed = torch.zeros_like(x) # (seq_len, batch, d_model)
+        if reset_masks is not None:
+            # Loop over the batch size
+            for i in range(reset_masks.shape[1]):
+                # Find the index of the first valid observation
+                valid_indices = (reset_masks[:, i, 0] == 1).nonzero(as_tuple=True)
+                if valid_indices[0].numel() > 0:
+                    valid_start_idx = valid_indices[0][0].item()
+                    # Apply positional encoding only to the valid part of the sequence
+                    pos_embed[valid_start_idx:, i, :] = self.pe[:x.shape[0] - valid_start_idx, 0, :].requires_grad_(False)
+        else:
+            pos_embed = self.pe[:x.shape[0], :, :].requires_grad_(False)
+        return self.dropout(pos_embed)
+
 
 class PositionwiseFF(torch.nn.Module):
     def __init__(self, d_input, d_inner, dropout):
@@ -164,7 +200,7 @@ class MultiHeadAttentionXL(torch.nn.Module):
         + pos_embs: positional embeddings passed separately to handle relative positions.
         + Arguments
             - input: torch.FloatTensor, shape - (seq, bs, self.d_input) = (20, 5, 8)
-            - pos_embs: torch.FloatTensor, shape - (seq + prev_seq, bs, self.d_input) = (40, 1, 8)
+            - pos_embs: torch.FloatTensor, shape - (seq + prev_seq, bs, self.d_input) = (40, 5, 8)
             - memory: torch.FloatTensor, shape - (prev_seq, b, d_in) = (20, 5, 8)
             - u: torch.FloatTensor, shape - (num_heads, inner_dim) = (3 x )
             - v: torch.FloatTensor, shape - (num_heads, inner_dim)
@@ -193,7 +229,7 @@ class MultiHeadAttentionXL(torch.nn.Module):
         _, bs, _ = q_tfmd.shape
         assert bs == k_tfmd.shape[1]
 
-        # content_attn = [curr x curr x B x n_heads] = [20 x 40 x 5 x 3]
+        # content_attn = [curr x seq x B x n_heads] = [20 x 40 x 5 x 3]
         content_attn = torch.einsum(
             "ibhd,jbhd->ijbh",
             (
@@ -202,18 +238,18 @@ class MultiHeadAttentionXL(torch.nn.Module):
             ),
         )
 
-        # p_tfmd: [seq x 1 x n_heads.d_head_inner] = [40 x 1 x 96]
+        # p_tfmd: [seq x B x n_heads.d_head_inner] = [40 x 5 x 96]
         p_tfmd = self.linear_p(pos_embs)
-        # position_attn = [curr x curr x B x n_heads] = [20 x 40 x 5 x 3]
+        # position_attn = [curr x seq x B x n_heads] = [20 x 40 x 5 x 3]
         position_attn = torch.einsum(
-            "ibhd,jhd->ijbh",
+            "ibhd,jbhd->ijbh",
             (
                 (q_tfmd.view(cur_seq, bs, H, d) + v),
-                p_tfmd.view(cur_seq, H, d),
+                p_tfmd.view(cur_seq, bs, H, d),
             ),
         )
         
-        # attn = [curr x curr x B x n_heads] = [20 x 40 x 5 x 3]
+        # attn = [curr x seq x B x n_heads] = [20 x 40 x 5 x 3]
         attn = content_attn + position_attn
 
         if mask is not None and mask.any().item():
@@ -227,6 +263,8 @@ class MultiHeadAttentionXL(torch.nn.Module):
 
             # Apply the mask to attention scores
             attn = attn.masked_fill(padding_mask==0, -float('inf'))
+
+            # Set to 1 if the whole sequence is -inf
             inf_mask = (~torch.isinf(attn)).sum(dim=1).to(bool).unsqueeze(1).repeat(1, cur_seq, 1, 1)
             attn = attn.masked_fill(~inf_mask, 1)
 
@@ -311,8 +349,9 @@ class StableTransformerXL(torch.nn.Module):
             self.d_ff_inner,
         ) = (n_layers, n_heads, d_input, d_head_inner, d_ff_inner)
 
-        self.pos_embs = PositionalEmbedding(d_input)
-        self.drop = torch.nn.Dropout(dropout)
+        # self.pos_embs = PositionalEmbedding(d_input)
+        self.pos_enc = PositionalEncoding(d_input, dropout)
+        # self.drop = torch.nn.Dropout(dropout)
         self.layers = torch.nn.ModuleList(
             [
                 StableTransformerEncoderLayerXL(
@@ -353,11 +392,13 @@ class StableTransformerXL(torch.nn.Module):
             .to(inputs.device)
         )
             
-        pos_ips = torch.arange(cur_seq - 1, -1, -1.0, dtype=torch.float).to(
-            inputs.device
-        )
-        # pos_embs = [curr x 1 x d_input] = [40 x 1 x 8]
-        pos_embs = self.drop(self.pos_embs(pos_ips))
+        # pos_ips = torch.arange(cur_seq - 1, -1, -1.0, dtype=torch.float).to(
+        #     inputs.device
+        # )
+        # # pos_embs = [curr x 1 x d_input] = [40 x 1 x 8]
+        # pos_embs = self.drop(self.pos_embs(pos_ips))
+
+        pos_embs = self.pos_enc(inputs, reset_masks)   # (seq_len, batch_size, d_input) 
         if self.d_input % 2 != 0:
             pos_embs = pos_embs[:, :, :-1]
 
