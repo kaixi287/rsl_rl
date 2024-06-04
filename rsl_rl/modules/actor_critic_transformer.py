@@ -193,9 +193,9 @@ class PositionalEncoding(nn.Module):
     def forward(self, x, reset_masks=None):
         if reset_masks is not None:
             # Loop over the batch size
-            for i in range(reset_masks.shape[0]):
+            for i in range(reset_masks.shape[1]):
                 # Find the index of the first valid observation
-                valid_indices = (reset_masks[i, :, 0] == 1).nonzero(as_tuple=True)
+                valid_indices = (reset_masks[:, i, 0] == 1).nonzero(as_tuple=True)
                 if valid_indices[0].numel() > 0:
                     valid_start_idx = valid_indices[0][0].item()
                     # Apply positional encoding only to the valid part of the sequence
@@ -204,19 +204,6 @@ class PositionalEncoding(nn.Module):
             x = x + self.pe[:, :x.shape[1], :].requires_grad_(False) # (batch, seq_len, d_model)
         return self.dropout(x)
     
-
-class PositionalEmbedding(torch.nn.Module):
-    def __init__(self, dim):
-        super(PositionalEmbedding, self).__init__()
-
-        self.dim = dim
-        inv_freq = 1 / (10000 ** (torch.arange(0.0, dim, 2.0) / dim))
-        self.register_buffer("inv_freq", inv_freq)
-
-    def forward(self, positions):
-        sinusoid_inp = torch.einsum("i,j->ij", positions.float(), self.inv_freq)
-        pos_emb = torch.cat([sinusoid_inp.sin(), sinusoid_inp.cos()], dim=-1)
-        return pos_emb[None, :, :]
     
 class ExtendedEmbedding(nn.Module):
     def __init__(self, input_dim, d_model, intermediate_dim=None, activation=nn.ELU()):
@@ -225,12 +212,12 @@ class ExtendedEmbedding(nn.Module):
             intermediate_dim = d_model  # Optionally set the intermediate dimension
 
         # First linear layer maps from input_dim to intermediate_dim
-        self.linear1 = nn.Linear(input_dim, intermediate_dim)
+        self.linear1 = nn.Linear(input_dim, intermediate_dim, bias=False)
         
         # Second linear layer maps from intermediate_dim to d_model
-        self.linear2 = nn.Linear(intermediate_dim, intermediate_dim)
+        self.linear2 = nn.Linear(intermediate_dim, intermediate_dim, bias=False)
 
-        self.linear3 = nn.Linear(intermediate_dim, d_model)
+        self.linear3 = nn.Linear(intermediate_dim, d_model, bias=False)
 
         # Activation function, e.g., ReLU
         self.activation = activation
@@ -274,9 +261,9 @@ class TransformerMemory(nn.Module):
     def __init__(self, input_dim, num_heads, num_layers, d_model: int = 256, d_ff: int = 1024, dropout: float = 0.1):
         super().__init__()
 
-        self.embedding = nn.Linear(input_dim, d_model)
+        # self.embedding = nn.Linear(input_dim, d_model, bias=False)
         # d_model = input_dim
-        # self.embedding = ExtendedEmbedding(input_dim, d_model, intermediate_dim=512)
+        self.embedding = ExtendedEmbedding(input_dim, d_model, intermediate_dim=512)
         self.pos_embed = PositionalEmbedding(d_model)
         self.pos_encoder = PositionalEncoding(d_model, dropout)
         self.drop = torch.nn.Dropout(dropout)
@@ -312,13 +299,7 @@ class TransformerMemory(nn.Module):
         # Embed the input (batch, seq_len, num_obs) --> (batch, seq_len, d_model)
         x = self.embedding(x)
 
-        x = self.pos_encoder(x, reset_masks.permute(1, 0, 2))
-
-        # pos_ips = torch.arange(seq_len - 1, -1, -1.0, dtype=torch.float).to(
-        #     x.device
-        # )
-        
-        # x = x + self.pos_embed(pos_ips)    # (batch x seq_len x d_model)
+        x = self.pos_encoder(x, reset_masks)
 
         # Pass through the transformer.
         x = self.transformer_encoder(x, mask=causal_mask, padding_mask=reset_masks) #, mask=causal_mask)   # (batch, seq_len, d_model)
