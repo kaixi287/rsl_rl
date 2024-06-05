@@ -59,6 +59,10 @@ class PPO:
         self.storage = RolloutStorage(
             num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, self.device
         )
+    
+    def clear_storage(self):
+        if self.storage:
+            self.storage.clear()
 
     def test_mode(self):
         self.actor_critic.test()
@@ -69,15 +73,22 @@ class PPO:
     def act(self, obs, critic_obs):
         if self.actor_critic.is_recurrent:
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
-        # Compute the actions and values
-        self.transition.actions = self.actor_critic.act(obs).detach()
-        self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
+
+        self.transition.actions = self.actor_critic.act(obs, masks=None).detach()
+        self.transition.values = self.actor_critic.evaluate(critic_obs, masks=None).detach()
+
         self.transition.actions_log_prob = self.actor_critic.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.actor_critic.action_mean.detach()
         self.transition.action_sigma = self.actor_critic.action_std.detach()
         # need to record obs and critic_obs before env.step()
-        self.transition.observations = obs
-        self.transition.critic_observations = critic_obs
+        # record the most recent observation if obs is a sequence
+        if obs.dim() > 2:
+            self.transition.observations = obs[-1].squeeze(0)
+            self.transition.critic_observations = critic_obs[-1].squeeze(0)
+        else:
+            self.transition.observations = obs
+            self.transition.critic_observations = critic_obs
+
         return self.transition.actions
 
     def process_env_step(self, rewards, dones, infos):
@@ -95,16 +106,19 @@ class PPO:
         self.actor_critic.reset(dones)
 
     def compute_returns(self, last_critic_obs):
-        last_values = self.actor_critic.evaluate(last_critic_obs).detach()
+        last_values = self.actor_critic.evaluate(last_critic_obs, masks=None).detach()
         self.storage.compute_returns(last_values, self.gamma, self.lam)
 
-    def update(self):
-        mean_value_loss = 0
-        mean_surrogate_loss = 0
+    def compute_and_update(self, do_update=True):
+        mean_value_loss = torch.tensor(0.0, device=self.device)
+        mean_surrogate_loss = torch.tensor(0.0, device=self.device)
+        mean_entropy_loss = torch.tensor(0.0, device=self.device)
+        
         if self.actor_critic.is_recurrent:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         else:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
+
         for (
             obs_batch,
             critic_obs_batch,
@@ -128,7 +142,7 @@ class PPO:
             entropy_batch = self.actor_critic.entropy
 
             # KL
-            if self.desired_kl is not None and self.schedule == "adaptive":
+            if do_update and self.desired_kl is not None and self.schedule == "adaptive":
                 with torch.inference_mode():
                     kl = torch.sum(
                         torch.log(sigma_batch / old_sigma_batch + 1.0e-5)
@@ -166,20 +180,26 @@ class PPO:
             else:
                 value_loss = (returns_batch - value_batch).pow(2).mean()
 
-            loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
+            entropy_loss = entropy_batch.mean()
 
-            # Gradient step
-            self.optimizer.zero_grad()
-            loss.backward()
-            nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
-            self.optimizer.step()
+            loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_loss
 
-            mean_value_loss += value_loss.item()
-            mean_surrogate_loss += surrogate_loss.item()
+            if do_update:
+                # Gradient step
+                self.optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+                self.optimizer.step()
+
+            mean_value_loss += value_loss
+            mean_surrogate_loss += surrogate_loss
+            mean_entropy_loss += entropy_loss
 
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
+        mean_entropy_loss /= num_updates
+
         self.storage.clear()
 
-        return mean_value_loss, mean_surrogate_loss
+        return mean_value_loss, mean_surrogate_loss, mean_entropy_loss
