@@ -119,14 +119,13 @@ class OnPolicyRunner:
         tot_meta_iter = start_meta_iter + self.num_meta_iterations
         for meta_iteration in range(start_meta_iter, tot_meta_iter):
             self.current_meta_iteration = meta_iteration
-            # Sample joint disable configs and run inner RL loop for each task
-            for _ in range(self.num_inner_iterations):  # Control how many task iterations per meta-iteration
-                # Sample and set joint disable configuration
-                num_joints_to_disable = random.randint(0, self.max_disabled_joints)
-                self.set_joint_disable_config(num_joints_to_disable)
+            
+            # Sample and set joint disable configuration
+            num_joints_to_disable = random.randint(0, self.max_disabled_joints)
+            self.set_joint_disable_config(num_joints_to_disable)
 
-                # Run inner loop for the current configuration
-                self.run_inner_loop(init_at_random_ep_len)
+            # Run inner loop for the current configuration
+            self.run_inner_loop(init_at_random_ep_len)
 
             # Meta update: compute meta-gradient based on accumulated experiences across tasks and update policy
             self.meta_update()
