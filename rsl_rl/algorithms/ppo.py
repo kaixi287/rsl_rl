@@ -102,8 +102,8 @@ class PPO:
         self.transition.clear()
         self.actor_critic.reset(dones)
 
-    def compute_returns(self, last_critic_obs, memory_eval=None):
-        last_values = self.actor_critic.evaluate(last_critic_obs, masks=None, memory=memory_eval).detach()
+    def compute_returns(self, last_critic_obs, reset_masks):
+        last_values = self.actor_critic.evaluate(last_critic_obs, masks=None, reset_masks=reset_masks).detach()
         self.storage.compute_returns(last_values, self.gamma, self.lam)
 
     def update(self):
@@ -127,9 +127,9 @@ class PPO:
             hid_states_batch,
             masks_batch,
         ) in generator:
-            self.actor_critic.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
+            self.actor_critic.act(obs_batch, masks=masks_batch, reset_masks=None, hidden_states=hid_states_batch[0])
             actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
-            value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1]
+            value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch, reset_masks=None, hidden_states=hid_states_batch[1]
             )
             mu_batch = self.actor_critic.action_mean
             sigma_batch = self.actor_critic.action_std
