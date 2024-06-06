@@ -127,9 +127,9 @@ class PPO:
             hid_states_batch,
             masks_batch,
         ) in generator:
-            self.actor_critic.act(obs_batch, masks=masks_batch, reset_masks=None, hidden_states=hid_states_batch[0])
+            self.actor_critic.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
             actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
-            value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch, reset_masks=None, hidden_states=hid_states_batch[1]
+            value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1]
             )
             mu_batch = self.actor_critic.action_mean
             sigma_batch = self.actor_critic.action_std

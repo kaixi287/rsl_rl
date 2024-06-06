@@ -105,8 +105,8 @@ class PositionalEncoding(nn.Module):
         self.register_buffer('pe', pe)
 
     def forward(self, x, reset_masks=None):
-        pos_embed = torch.zeros_like(x) # (seq_len, batch, d_model)
         if reset_masks is not None:
+            pos_embed = torch.zeros_like(x) # (seq_len, batch, d_model)
             # Loop over the batch size
             for i in range(reset_masks.shape[1]):
                 # Find the index of the first valid observation
@@ -116,7 +116,7 @@ class PositionalEncoding(nn.Module):
                     # Apply positional encoding only to the valid part of the sequence
                     pos_embed[valid_start_idx:, i, :] = self.pe[:x.shape[0] - valid_start_idx, 0, :].requires_grad_(False)
         else:
-            pos_embed = self.pe[:x.shape[0], :, :].requires_grad_(False)
+            pos_embed = self.pe[:x.shape[0], :, :].repeat(1, x.shape[1], 1).requires_grad_(False)
         return self.dropout(pos_embed)
 
 
