@@ -264,7 +264,6 @@ class TransformerMemory(nn.Module):
         # self.embedding = nn.Linear(input_dim, d_model, bias=False)
         # d_model = input_dim
         self.embedding = ExtendedEmbedding(input_dim, d_model, intermediate_dim=512)
-        self.pos_embed = PositionalEmbedding(d_model)
         self.pos_encoder = PositionalEncoding(d_model, dropout)
         self.drop = torch.nn.Dropout(dropout)
         # Create the encoder blocks
@@ -302,7 +301,7 @@ class TransformerMemory(nn.Module):
         x = self.pos_encoder(x, reset_masks)
 
         # Pass through the transformer.
-        x = self.transformer_encoder(x, mask=causal_mask, padding_mask=reset_masks) #, mask=causal_mask)   # (batch, seq_len, d_model)
+        x = self.transformer_encoder(x, mask=causal_mask, padding_mask=reset_masks)   # (batch, seq_len, d_model)
         # x = x.squeeze(1)    # (batch, seq_len, d_model) --> (batch, d_model)
         x = x.permute(1, 0, 2) # (batch, seq_len, d_model) --> (seq_len, batch, d_model)
         
