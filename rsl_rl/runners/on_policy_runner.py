@@ -40,9 +40,6 @@ class OnPolicyRunner:
         ).to(self.device)
         alg_class = eval(self.alg_cfg.pop("class_name"))  # PPO
         self.alg: PPO = alg_class(actor_critic, device=self.device, **self.alg_cfg)
-
-        self.num_inner_iterations = self.cfg["num_inner_iterations"]
-        self.num_meta_iterations = self.cfg["max_iterations"]
         self.max_disabled_joints = self.cfg["max_disabled_joints"]
 
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
@@ -74,8 +71,7 @@ class OnPolicyRunner:
         self.writer = None
         self.tot_timesteps = 0
         self.tot_time = 0
-        self.current_meta_iteration = 0
-        self.current_inner_iteration = 0
+        self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
     
     def set_joint_disable_config(self, num_joints_to_disable: int):
@@ -92,8 +88,8 @@ class OnPolicyRunner:
             self.current_disabled_joints = min(self.current_disabled_joints + 1, self.max_disabled_joints)
             print(f"Progressing to difficulty level {self.current_disabled_joints} (up to {self.current_disabled_joints} disabled joints)")
             self.recent_rewards.clear()  # Clear the reward buffer for the new difficulty level
-
-    def learn(self, init_at_random_ep_len: bool = False):
+    
+    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):
         # initialize writer
         if self.log_dir is not None and self.writer is None:
             # Launch either Tensorboard or Neptune & Tensorboard summary writer(s), default: Tensorboard.
@@ -114,48 +110,6 @@ class OnPolicyRunner:
                 self.writer = TensorboardSummaryWriter(log_dir=self.log_dir, flush_secs=10)
             else:
                 raise AssertionError("logger type not found")
-        
-        start_meta_iter = self.current_meta_iteration
-        tot_meta_iter = start_meta_iter + self.num_meta_iterations
-        for meta_iteration in range(start_meta_iter, tot_meta_iter):
-            self.current_meta_iteration = meta_iteration
-            
-            # Sample and set joint disable configuration
-            num_joints_to_disable = random.randint(0, self.max_disabled_joints)
-            self.set_joint_disable_config(num_joints_to_disable)
-
-            # Run inner loop for the current configuration
-            self.run_inner_loop(init_at_random_ep_len)
-
-            # Meta update: compute meta-gradient based on accumulated experiences across tasks and update policy
-            self.meta_update()
-
-            if meta_iteration % self.save_interval == 0:
-                self.save(os.path.join(self.log_dir, f"model_{self.current_meta_iteration}.pt"))
-            
-            # Check for reward-based curriculum advancement
-            # self.check_curriculum_advancement(rewbuffer)
-
-            if meta_iteration == start_meta_iter:
-                # obtain all the diff files
-                git_file_paths = store_code_state(self.log_dir, self.git_status_repos)
-                # if possible store them to wandb
-                if self.logger_type in ["wandb", "neptune"] and git_file_paths:
-                    for path in git_file_paths:
-                        self.writer.save_file(path)
-        
-        self.save(os.path.join(self.log_dir, f"model_{tot_meta_iter}.pt"))
-
-        # Evaluate the meta-learned policy on a held-out task set
-        self.evaluate()
-    
-    def run_inner_loop(self, init_at_random_ep_len: bool = False):
-
-        # Reset rnn hidden states
-        self.alg.actor_critic.reset()
-
-        # Clear storage
-        self.alg.clear_storage()
 
         if init_at_random_ep_len:
             self.env.episode_length_buf = torch.randint_like(
@@ -172,73 +126,20 @@ class OnPolicyRunner:
         cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
-        start = time.time()
-        # Rollout
-        with torch.inference_mode():
-            for i in range(self.num_steps_per_env):
-                actions = self.alg.act(obs, critic_obs)
-                obs, rewards, dones, infos = self.env.step(actions)
-                obs = self.obs_normalizer(obs)
-                if "critic" in infos["observations"]:
-                    critic_obs = self.critic_obs_normalizer(infos["observations"]["critic"])
-                else:
-                    critic_obs = obs
-                obs, critic_obs, rewards, dones = (
-                    obs.to(self.device),
-                    critic_obs.to(self.device),
-                    rewards.to(self.device),
-                    dones.to(self.device),
-                )
-                self.alg.process_env_step(rewards, dones, infos)
+        start_iter = self.current_learning_iteration
+        tot_iter = start_iter + num_learning_iterations
+        for it in range(start_iter, tot_iter):
+            # Sample and set joint disable configuration
+            num_joints_to_disable = random.randint(0, self.max_disabled_joints)
+            self.set_joint_disable_config(num_joints_to_disable)
 
-                if self.log_dir is not None:
-                    # Book keeping
-                    # note: we changed logging to use "log" instead of "episode" to avoid confusion with
-                    # different types of logging data (rewards, curriculum, etc.)
-                    if "episode" in infos:
-                        ep_infos.append(infos["episode"])
-                    elif "log" in infos:
-                        ep_infos.append(infos["log"])
-                    cur_reward_sum += rewards
-                    cur_episode_length += 1
-                    new_ids = (dones > 0).nonzero(as_tuple=False)
-                    rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
-                    lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
-                    cur_reward_sum[new_ids] = 0
-                    cur_episode_length[new_ids] = 0
-
-            stop = time.time()
-            collection_time = stop - start
-
-        # Learning step
-        start = stop
-        self.alg.compute_returns(critic_obs)
-
-        mean_value_loss, mean_surrogate_loss, _ = self.alg.compute_and_update(do_update=True)
-        mean_value_loss = mean_value_loss.detach().item()
-        mean_surrogate_loss = mean_surrogate_loss.detach().item()
-        stop = time.time()
-        learn_time = stop - start
-        if self.log_dir is not None:
-            self.log(locals())
-        ep_infos.clear()
-
-    def meta_update(self):
-        # Aggregate gradients from each task and udpate the meta-policy
-        self.alg.actor_critic.zero_grad()
-
-        mean_value_loss = 0.0
-        mean_surrogate_loss = 0.0
-        mean_entropy_loss = 0.0
-
-        for num_disabled_joints in range(self.max_disabled_joints + 1):
-            self.set_joint_disable_config(num_disabled_joints)
-            obs, extras = self.env.get_observations()
-            critic_obs = extras["observations"].get("critic", obs)
-            obs, critic_obs = obs.to(self.device), critic_obs.to(self.device)
-
+            # Inner-loop
+            start = time.time()
+            # Rollout
             with torch.inference_mode():
-                for _ in range(self.num_steps_per_env):
+                # Reset RNN hidden states for each task
+                self.alg.actor_critic.reset()
+                for i in range(self.num_steps_per_env):
                     actions = self.alg.act(obs, critic_obs)
                     obs, rewards, dones, infos = self.env.step(actions)
                     obs = self.obs_normalizer(obs)
@@ -254,23 +155,50 @@ class OnPolicyRunner:
                     )
                     self.alg.process_env_step(rewards, dones, infos)
 
-                # Compute gradients for the task
+                    if self.log_dir is not None:
+                        # Book keeping
+                        # note: we changed logging to use "log" instead of "episode" to avoid confusion with
+                        # different types of logging data (rewards, curriculum, etc.)
+                        if "episode" in infos:
+                            ep_infos.append(infos["episode"])
+                        elif "log" in infos:
+                            ep_infos.append(infos["log"])
+                        cur_reward_sum += rewards
+                        cur_episode_length += 1
+                        new_ids = (dones > 0).nonzero(as_tuple=False)
+                        rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
+                        lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
+                        cur_reward_sum[new_ids] = 0
+                        cur_episode_length[new_ids] = 0
+
+                stop = time.time()
+                collection_time = stop - start
+
+                # Learning step
+                start = stop
                 self.alg.compute_returns(critic_obs)
 
-            # Compute gradients for the task
-            self.alg.compute_returns(critic_obs)
-            value_loss, surrogate_loss, entropy_loss = self.alg.compute_and_update(do_update=False)
+            mean_value_loss, mean_surrogate_loss = self.alg.update()
+            stop = time.time()
+            learn_time = stop - start
+            self.current_learning_iteration = it
+            if self.log_dir is not None:
+                self.log(locals())
+            if it % self.save_interval == 0:
+                self.save(os.path.join(self.log_dir, f"model_{it}.pt"))
+            ep_infos.clear()
+            if it == start_iter:
+                # obtain all the diff files
+                git_file_paths = store_code_state(self.log_dir, self.git_status_repos)
+                # if possible store them to wandb
+                if self.logger_type in ["wandb", "neptune"] and git_file_paths:
+                    for path in git_file_paths:
+                        self.writer.save_file(path)
 
-            total_loss = self.alg.value_loss_coef * value_loss + surrogate_loss - self.alg.entropy_coef * entropy_loss
-            total_loss.backward()
+        self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"))
 
-            mean_value_loss += value_loss.item()
-            mean_surrogate_loss += surrogate_loss.item()
-            mean_entropy_loss += entropy_loss.item()
-
-        # Apply aggregated meta-gradients
-        nn.utils.clip_grad_norm_(self.alg.actor_critic.parameters(), self.alg.max_grad_norm)
-        self.alg.optimizer.step()
+        # Evaluate the meta-learned policy on a held-out task set
+        self.evaluate()
         
 
     def evaluate(self, num_eval_episodes: int = 40):
