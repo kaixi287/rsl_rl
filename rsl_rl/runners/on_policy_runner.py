@@ -249,8 +249,8 @@ class OnPolicyRunner:
             print(f"Evaluation results for {num_disabled_joints} disabled joints - Mean Reward: {mean_reward}, Mean Episode Length: {mean_length}")
         
             if self.log_dir is not None:
-                self.writer.add_scalar(f"Eval/mean_reward_{num_disabled_joints}_disabled_joints", mean_reward, self.current_meta_iteration)
-                self.writer.add_scalar(f"Eval/mean_episode_length_{num_disabled_joints}_disabled_joints", mean_length, self.current_meta_iteration)
+                self.writer.add_scalar(f"Eval/mean_reward_{num_disabled_joints}_disabled_joints", mean_reward, self.current_learning_iteration)
+                self.writer.add_scalar(f"Eval/mean_episode_length_{num_disabled_joints}_disabled_joints", mean_length, self.current_learning_iteration)
 
     def log(self, locs: dict, width: int = 80, pad: int = 35):
         self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
