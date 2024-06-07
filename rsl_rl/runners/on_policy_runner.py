@@ -297,14 +297,12 @@ class OnPolicyRunner:
                     "Train/mean_episode_length/time", statistics.mean(locs["lenbuffer"]), self.tot_time
                 )
 
-        meta_iter_info = f"\033[1m Meta iteration {self.current_meta_iteration}/{self.num_meta_iterations} \033[0m\n"
-        inner_iter_info = f" \033[1m Inner iteration {locs['it']}/{locs['tot_iter']} \033[0m "
+        str = f" \033[1m Learning iteration {locs['it']}/{locs['tot_iter']} \033[0m "
 
         if len(locs["rewbuffer"]) > 0:
             log_string = (
                 f"""{'#' * width}\n"""
-                f"""{meta_iter_info.center(width, ' ')}\n"""
-                f"""{inner_iter_info.center(width, ' ')}\n\n"""
+                f"""{str.center(width, ' ')}\n\n"""
                 f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
                             'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
                 f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
@@ -318,8 +316,7 @@ class OnPolicyRunner:
         else:
             log_string = (
                 f"""{'#' * width}\n"""
-                f"""{meta_iter_info.center(width, ' ')}\n\n"""
-                f"""{inner_iter_info.center(width, ' ')}\n\n"""
+                f"""{str.center(width, ' ')}\n\n"""
                 f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
                             'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
                 f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
@@ -336,7 +333,7 @@ class OnPolicyRunner:
             f"""{'Iteration time:':>{pad}} {iteration_time:.2f}s\n"""
             f"""{'Total time:':>{pad}} {self.tot_time:.2f}s\n"""
             f"""{'ETA:':>{pad}} {self.tot_time / (locs['it'] + 1) * (
-                               self.num_inner_iterations - locs['it']):.1f}s\n"""
+                               locs['num_learning_iterations'] - locs['it']):.1f}s\n"""
         )
         print(log_string)
 
