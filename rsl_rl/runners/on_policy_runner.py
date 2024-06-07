@@ -341,7 +341,7 @@ class OnPolicyRunner:
         saved_dict = {
             "model_state_dict": self.alg.actor_critic.state_dict(),
             "optimizer_state_dict": self.alg.optimizer.state_dict(),
-            "meta_iter": self.current_meta_iteration,
+            "iter": self.current_learning_iteration,
             "infos": infos,
         }
         if self.empirical_normalization:
@@ -351,7 +351,7 @@ class OnPolicyRunner:
 
         # Upload model to external logging service
         if self.logger_type in ["neptune", "wandb"]:
-            self.writer.save_model(path, self.current_meta_iteration)
+            self.writer.save_model(path, self.current_learning_iteration)
 
     def load(self, path, load_optimizer=True):
         loaded_dict = torch.load(path)
@@ -361,7 +361,7 @@ class OnPolicyRunner:
             self.critic_obs_normalizer.load_state_dict(loaded_dict["critic_obs_norm_state_dict"])
         if load_optimizer:
             self.alg.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
-        self.current_meta_iteration = loaded_dict["meta_iter"]
+        self.current_learning_iteration = loaded_dict["iter"]
         return loaded_dict["infos"]
 
     def get_inference_policy(self, device=None):
