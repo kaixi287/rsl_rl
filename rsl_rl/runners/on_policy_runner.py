@@ -130,7 +130,7 @@ class OnPolicyRunner:
         tot_iter = start_iter + num_learning_iterations
         for it in range(start_iter, tot_iter):
             # Sample and set joint disable configuration
-            num_joints_to_disable = random.randint(0, self.max_disabled_joints)
+            num_joints_to_disable = random.randint(0, self.max_disabled_joints+1)
             self.set_joint_disable_config(num_joints_to_disable)
 
             # Inner-loop
