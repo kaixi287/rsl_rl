@@ -212,12 +212,12 @@ class ExtendedEmbedding(nn.Module):
             intermediate_dim = d_model  # Optionally set the intermediate dimension
 
         # First linear layer maps from input_dim to intermediate_dim
-        self.linear1 = nn.Linear(input_dim, intermediate_dim, bias=False)
+        self.linear1 = nn.Linear(input_dim, intermediate_dim)
         
         # Second linear layer maps from intermediate_dim to d_model
-        self.linear2 = nn.Linear(intermediate_dim, intermediate_dim, bias=False)
+        self.linear2 = nn.Linear(intermediate_dim, intermediate_dim)
 
-        self.linear3 = nn.Linear(intermediate_dim, d_model, bias=False)
+        self.linear3 = nn.Linear(intermediate_dim, d_model)
 
         # Activation function, e.g., ReLU
         self.activation = activation
