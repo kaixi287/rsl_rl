@@ -29,9 +29,9 @@ class OnPolicyRunner:
         self.device = device
         self.env = env
         obs, extras = self.env.get_observations()
-        num_obs = obs.shape[1]
+        num_obs = obs.shape[1] + 1
         if "critic" in extras["observations"]:
-            num_critic_obs = extras["observations"]["critic"].shape[1]
+            num_critic_obs = extras["observations"]["critic"].shape[1] + 1
         else:
             num_critic_obs = num_obs
         actor_critic_class = eval(self.policy_cfg.pop("class_name"))  # ActorCritic
@@ -59,6 +59,9 @@ class OnPolicyRunner:
             [num_critic_obs],
             [self.env.num_actions],
         )
+
+        # init episode counters
+        self.alg.init_episode_counters(self.env.num_envs)
 
         # Reward-base curriculum learning
         self.current_disabled_joints = 0       # Start with 0 disabled joints
@@ -118,6 +121,10 @@ class OnPolicyRunner:
         obs, extras = self.env.get_observations()
         critic_obs = extras["observations"].get("critic", obs)
         obs, critic_obs = obs.to(self.device), critic_obs.to(self.device)
+
+        # initialize done flag for first step
+        dones = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
+        
         self.train_mode()  # switch to train mode (for dropout for example)
 
         ep_infos = []
@@ -140,6 +147,10 @@ class OnPolicyRunner:
                 # Reset RNN hidden states for each task
                 self.alg.actor_critic.reset()
                 for i in range(self.num_steps_per_env):
+                    # Concatenate observation and done flag
+                    obs = torch.cat((obs, dones.unsqueeze(-1)), dim=-1)
+                    critic_obs = torch.cat((critic_obs, dones.unsqueeze(-1)), dim=-1)
+
                     actions = self.alg.act(obs, critic_obs)
                     obs, rewards, dones, infos = self.env.step(actions)
                     obs = self.obs_normalizer(obs)
@@ -176,7 +187,8 @@ class OnPolicyRunner:
 
                 # Learning step
                 start = stop
-                self.alg.compute_returns(critic_obs)
+                last_critic_obs = torch.cat((critic_obs, dones.unsqueeze(-1)), dim=-1)
+                self.alg.compute_returns(last_critic_obs)
 
             mean_value_loss, mean_surrogate_loss = self.alg.update()
             stop = time.time()
@@ -212,6 +224,7 @@ class OnPolicyRunner:
             obs, extras = self.env.get_observations()
             critic_obs = extras["observations"].get("critic", obs)
             obs, critic_obs = obs.to(self.device), critic_obs.to(self.device)
+            dones = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
             rewbuffer = deque(maxlen=num_eval_episodes)
             lenbuffer = deque(maxlen=num_eval_episodes)
@@ -220,6 +233,10 @@ class OnPolicyRunner:
             
             while len(lenbuffer) < num_eval_episodes:
                 with torch.inference_mode():
+                    # Concatenate observation and done flag
+                    obs = torch.cat((obs, dones.unsqueeze(-1)), dim=-1)
+                    critic_obs = torch.cat((critic_obs, dones.unsqueeze(-1)), dim=-1)
+
                     actions = self.alg.act(obs, critic_obs)
                     obs, rewards, dones, infos = self.env.step(actions)
                     obs = self.obs_normalizer(obs)
