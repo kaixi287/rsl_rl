@@ -30,6 +30,7 @@ class PPO:
         schedule="fixed",
         desired_kl=0.01,
         device="cpu",
+        K=2,
     ):
         self.device = device
 
@@ -55,14 +56,16 @@ class PPO:
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
 
+        self.episode_counters = None
+        self.K = K
+
     def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
         self.storage = RolloutStorage(
             num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, self.device
         )
     
-    def clear_storage(self):
-        if self.storage:
-            self.storage.clear()
+    def init_episode_counters(self, num_envs):
+        self.episode_counters = torch.zeros(num_envs, dtype=torch.long, device=self.device)
 
     def test_mode(self):
         self.actor_critic.test()
@@ -103,7 +106,16 @@ class PPO:
         # Record the transition
         self.storage.add_transitions(self.transition)
         self.transition.clear()
-        # self.actor_critic.reset(dones)
+        
+        # Reset RNN hidden states every K episodes
+        self.episode_counters += dones
+        reset_mask = (self.episode_counters >= self.K).int()
+
+        # Call the reset method of actor_critic with the reset mask
+        self.actor_critic.reset(reset_mask)
+
+        # Reset counters for environments that reached K
+        self.episode_counters = self.episode_counters * (1 - reset_mask)
 
     def compute_returns(self, last_critic_obs):
         last_values = self.actor_critic.evaluate(last_critic_obs, masks=None).detach()
