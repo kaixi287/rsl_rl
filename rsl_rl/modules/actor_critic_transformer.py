@@ -141,6 +141,10 @@ class MultiHeadAttentionBlock(nn.Module):
             attention_scores.masked_fill_(padding_mask==0, -float('inf'))
             inf_mask = (~torch.isinf(attention_scores)).sum(-1).to(bool).unsqueeze(-1).repeat(1, 1, 1, seq_len)
             attention_scores.masked_fill_(~inf_mask, 1)
+        eyes = torch.eye(seq_len, device=attention_scores.device).unsqueeze(0).unsqueeze(0) * 2
+        attention_scores = attention_scores + eyes
+        # attention_scores = torch.eye(seq_len, device=query.device).unsqueeze(0).repeat(h, 1, 1)
+        # attention_scores = attention_scores.unsqueeze(0).repeat(batch_size, 1, 1, 1)
         attention_scores = attention_scores.softmax(dim=-1) # (batch, h, seq_len, seq_len) # Apply softmax
         if dropout is not None:
             attention_scores = dropout(attention_scores)
@@ -292,13 +296,20 @@ class TransformerMemory(nn.Module):
         # x = x.unsqueeze(1)  # (batch, num_obs) --> (batch, seq_len, num_obs)
         seq_len = x.shape[1]
 
-        # Generate a causal mask to limit attention to the preceding tokens
-        causal_mask = self.generate_causal_mask(seq_len).to(x.device)   # (1, seq_len, seq_len)
-
         # Embed the input (batch, seq_len, num_obs) --> (batch, seq_len, d_model)
         x = self.embedding(x)
 
         x = self.pos_encoder(x, reset_masks)
+
+        eye_mask = torch.eye(seq_len)
+        roll_mask = torch.roll(eye_mask, shifts=1, dims=0)
+        roll_mask[0,:] = 0
+
+        causal_mask = (eye_mask + roll_mask).unsqueeze(0).to(x.device)
+
+        # causal_mask = torch.eye(seq_len).unsqueeze(0).to(x.device)
+
+        # causal_mask = self.generate_causal_mask(seq_len).to(x.device)   # (1, seq_len, seq_len)
 
         # Pass through the transformer.
         x = self.transformer_encoder(x, mask=causal_mask, padding_mask=reset_masks)   # (batch, seq_len, d_model)
