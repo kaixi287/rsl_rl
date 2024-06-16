@@ -85,7 +85,7 @@ class OnPolicyRunner:
         self.critic_observation_buffers[env_idx].clear()
         self.mask_buffers[env_idx].clear()
 
-        # Initialize buffers with zeros up to steps
+        # Initialize buffers with zeros
         for _ in range(self.num_steps_per_env):
             self.observation_buffers[env_idx].append(torch.zeros_like(obs[env_idx]))
             self.critic_observation_buffers[env_idx].append(torch.zeros_like(critic_obs[env_idx]))
