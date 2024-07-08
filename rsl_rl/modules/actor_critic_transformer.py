@@ -139,10 +139,21 @@ class MultiHeadAttentionBlock(nn.Module):
             padding_mask = padding_mask.unsqueeze(-2).repeat(1, 1, seq_len, 1)
 
             attention_scores.masked_fill_(padding_mask==0, -float('inf'))
-            inf_mask = (~torch.isinf(attention_scores)).sum(-1).to(bool).unsqueeze(-1).repeat(1, 1, 1, seq_len)
-            attention_scores.masked_fill_(~inf_mask, 1)
-        eyes = torch.eye(seq_len, device=attention_scores.device).unsqueeze(0).unsqueeze(0) * 2
-        attention_scores = attention_scores + eyes
+
+            # Check if there are any rows with all inf values in the attention scores
+            inf_mask = torch.isinf(attention_scores).all(dim=-1)
+            
+            # Create an index tensor for the diagonals
+            indices = torch.arange(seq_len, device=attention_scores.device)
+
+            # Expand indices to match the shape of attention_scores
+            diag_indices = indices.unsqueeze(0).unsqueeze(0).expand(batch_size, h, -1)
+
+            # Create the diagonal mask
+            diag_mask = (diag_indices.unsqueeze(-1) == indices) & inf_mask.unsqueeze(-1)
+            attention_scores[diag_mask] = 0.0
+        # eyes = torch.eye(seq_len, device=attention_scores.device).unsqueeze(0).unsqueeze(0) * 2
+        # attention_scores = attention_scores + eyes
         # attention_scores = torch.eye(seq_len, device=query.device).unsqueeze(0).repeat(h, 1, 1)
         # attention_scores = attention_scores.unsqueeze(0).repeat(batch_size, 1, 1, 1)
         attention_scores = attention_scores.softmax(dim=-1) # (batch, h, seq_len, seq_len) # Apply softmax
@@ -301,15 +312,15 @@ class TransformerMemory(nn.Module):
 
         x = self.pos_encoder(x, reset_masks)
 
-        eye_mask = torch.eye(seq_len)
-        roll_mask = torch.roll(eye_mask, shifts=1, dims=0)
-        roll_mask[0,:] = 0
+        # eye_mask = torch.eye(seq_len)
+        # roll_mask = torch.roll(eye_mask, shifts=1, dims=0)
+        # roll_mask[0,:] = 0
 
-        causal_mask = (eye_mask + roll_mask).unsqueeze(0).to(x.device)
+        # causal_mask = (eye_mask + roll_mask).unsqueeze(0).to(x.device)
 
         # causal_mask = torch.eye(seq_len).unsqueeze(0).to(x.device)
 
-        # causal_mask = self.generate_causal_mask(seq_len).to(x.device)   # (1, seq_len, seq_len)
+        causal_mask = self.generate_causal_mask(seq_len).to(x.device)   # (1, seq_len, seq_len)
 
         # Pass through the transformer.
         x = self.transformer_encoder(x, mask=causal_mask, padding_mask=reset_masks)   # (batch, seq_len, d_model)
