@@ -56,18 +56,15 @@ class ActorCriticRecurrent(ActorCritic):
 
     def act(self, observations, masks=None, hidden_states=None):
         input_a = self.memory_a(observations, masks, hidden_states)
-        combined_input = torch.cat([input_a.squeeze(0), observations], dim=-1)
-        return super().act(combined_input)
+        return super().act(input_a.squeeze(0))
 
     def act_inference(self, observations):
         input_a = self.memory_a(observations)
-        combined_input = torch.cat([input_a.squeeze(0), observations], dim=-1)
-        return super().act_inference(combined_input)
+        return super().act_inference(input_a.squeeze(0))
 
     def evaluate(self, critic_observations, masks=None, hidden_states=None):
         input_c = self.memory_c(critic_observations, masks, hidden_states)
-        combined_input = torch.cat([input_c.squeeze(0), critic_observations], dim=-1)
-        return super().evaluate(combined_input)
+        return super().evaluate(input_c.squeeze(0))
 
     def get_hidden_states(self):
         return self.memory_a.hidden_states, self.memory_c.hidden_states
@@ -88,10 +85,15 @@ class Memory(torch.nn.Module):
             if hidden_states is None:
                 raise ValueError("Hidden states not passed to memory module during policy update")
             out, _ = self.rnn(input, hidden_states)
+            
+            # Concatenate the input to the output
+            out = torch.cat([out, input], dim=-1)
             out = unpad_trajectories(out, masks)
         else:
             # inference mode (collection): use hidden states of last step
             out, self.hidden_states = self.rnn(input.unsqueeze(0), self.hidden_states)
+            # Concatenate the input to the output
+            out = torch.cat([out.squeeze(0), input], dim=-1)
         return out
 
     def reset(self, dones=None):
