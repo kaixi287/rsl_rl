@@ -33,8 +33,8 @@ class ActorCriticRecurrent(ActorCritic):
             )
 
         super().__init__(
-            num_actor_obs=rnn_hidden_size,
-            num_critic_obs=rnn_hidden_size,
+            num_actor_obs=rnn_hidden_size+num_actor_obs,
+            num_critic_obs=rnn_hidden_size+num_critic_obs,
             num_actions=num_actions,
             actor_hidden_dims=actor_hidden_dims,
             critic_hidden_dims=critic_hidden_dims,
@@ -56,15 +56,18 @@ class ActorCriticRecurrent(ActorCritic):
 
     def act(self, observations, masks=None, hidden_states=None):
         input_a = self.memory_a(observations, masks, hidden_states)
-        return super().act(input_a.squeeze(0))
+        combined_input = torch.cat([input_a.squeeze(0), observations], dim=-1)
+        return super().act(combined_input)
 
     def act_inference(self, observations):
         input_a = self.memory_a(observations)
-        return super().act_inference(input_a.squeeze(0))
+        combined_input = torch.cat([input_a.squeeze(0), observations], dim=-1)
+        return super().act_inference(combined_input)
 
     def evaluate(self, critic_observations, masks=None, hidden_states=None):
         input_c = self.memory_c(critic_observations, masks, hidden_states)
-        return super().evaluate(input_c.squeeze(0))
+        combined_input = torch.cat([input_c.squeeze(0), critic_observations], dim=-1)
+        return super().evaluate(combined_input)
 
     def get_hidden_states(self):
         return self.memory_a.hidden_states, self.memory_c.hidden_states
