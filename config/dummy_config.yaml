@@ -16,6 +16,25 @@ algorithm:
   num_learning_epochs: 5
   num_mini_batches: 4  # mini batch size = num_envs * num_steps / num_mini_batches
   schedule: adaptive  # adaptive, fixed
+
+  # -- Symmetry Augmentation
+  symmetry_cfg:
+    use_data_augmentation: true  # this adds symmetric trajectories to the batch
+    use_mirror_loss: false  # this adds symmetry loss term to the loss function
+    # string containing the module and function name to import.
+    # Example: "legged_gym.envs.locomotion.anymal_c.symmetry:get_symmetric_states"
+    #
+    # .. code-block:: python
+    #
+    #     @torch.no_grad()
+    #     def get_symmetric_states(
+    #        obs: Optional[torch.Tensor] = None, actions: Optional[torch.Tensor] = None, cfg: "BaseEnvCfg" = None, is_critic: bool = False,
+    #     ) -> Tuple[torch.Tensor, torch.Tensor]:
+    #
+    data_augmentation_func: null
+    # coefficient for symmetry loss term
+    # if 0, then no symmetry loss is used
+    mirror_loss_coeff: 0.0
 policy:
   class_name: ActorCritic
   # for MLP i.e. `ActorCritic`

@@ -9,6 +9,7 @@ import torch.optim as optim
 
 from rsl_rl.modules import ActorCritic
 from rsl_rl.storage import RolloutStorage
+from rsl_rl.utils import string_to_callable
 
 
 class PPO:
@@ -30,13 +31,35 @@ class PPO:
         schedule="fixed",
         desired_kl=0.01,
         device="cpu",
+        symmetry_cfg: dict | None = None,
     ):
         self.device = device
 
         self.desired_kl = desired_kl
         self.schedule = schedule
         self.learning_rate = learning_rate
-
+        
+        # Symmetry components
+        if symmetry_cfg is not None:
+            # Check if symmetry is enabled
+            self.use_symmetry = symmetry_cfg["use_data_augmentation"] or symmetry_cfg["use_mirror_loss"]
+            # Print that we are not using symmetry
+            if not self.use_symmetry:
+                print("Symmetry configuration is provided but not used.")
+            # If funciton is a string then resolve it to a function
+            if isinstance(symmetry_cfg["data_augmentation_func"], str):
+                symmetry_cfg["data_augmentation_func"] = string_to_callable(symmetry_cfg["data_augmentation_func"])
+            # Check valid configuration
+            if symmetry_cfg["use_data_augmentation"] and not callable(symmetry_cfg["data_augmentation_func"]):
+                raise ValueError(
+                    f"Data augmentation enalbled but the function is not callable: {symmetry_cfg['data_augmentation_func']}"
+                )
+            # store symmetry configuration
+            self.symmetry_cfg = symmetry_cfg
+        else:
+            self.use_symmetry = False
+            self.symmetry_cfg = None
+            
         # PPO components
         self.actor_critic = actor_critic
         self.actor_critic.to(self.device)
@@ -54,10 +77,17 @@ class PPO:
         self.lam = lam
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
+        
+        # For RNN: hidden states of augmented data
+        if self.use_symmetry and self.symmetry_cfg["use_data_augmentation"] and self.actor_critic.is_recurrent:
+            self.augmented_hidden = {}
+        
+        # We need to store last critic observation to get identical augmented critic hidden states
+        self.last_critic_obs = None
 
     def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
         self.storage = RolloutStorage(
-            num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, self.device
+            num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, self.actor_critic, self.device
         )
 
     def test_mode(self):
@@ -95,14 +125,25 @@ class PPO:
         self.actor_critic.reset(dones)
 
     def compute_returns(self, last_critic_obs):
-        last_values = self.actor_critic.evaluate(last_critic_obs).detach()
+        # TODO: check if this is correct
+        last_critic_hidden = None
+        if self.actor_critic.is_recurrent:
+            self.last_critic_obs = last_critic_obs
+            last_critic_hidden = self.actor_critic.get_hidden_states()[1]
+        last_values = self.actor_critic.evaluate(last_critic_obs, hidden_states=last_critic_hidden).detach()
         self.storage.compute_returns(last_values, self.gamma, self.lam)
 
     def update(self):
         mean_value_loss = 0
         mean_surrogate_loss = 0
+        mean_entropy = 0
+        #  -- Symmetry loss
+        if self.use_symmetry:
+            mean_symmetry_loss = 0
+        else:
+            mean_symmetry_loss = None
         if self.actor_critic.is_recurrent:
-            generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
+            generator = self.storage.recurrent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs, self.symmetry_cfg, self.last_critic_obs)
         else:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         for (
@@ -118,14 +159,51 @@ class PPO:
             hid_states_batch,
             masks_batch,
         ) in generator:
+            
+            # number of augmentations per sample
+            # we start with 1 and increase it if we use symmetry augmentation
+            num_aug = 1
+            # original batch size
+            original_batch_size = old_mu_batch.shape[-2]
+            
+            # Perform symmetric augmentation
+            if self.use_symmetry and self.symmetry_cfg["use_data_augmentation"] and not self.actor_critic.is_recurrent:
+                # augmentation using symmetry
+                # returned shape: [batch_size * num_aug, ...]
+                data_augmentation_func = self.symmetry_cfg["data_augmentation_func"]
+                obs_batch, _ = data_augmentation_func(obs=obs_batch, actions=None, env=self.symmetry_cfg["env"])
+                critic_obs_batch, _ = data_augmentation_func(
+                    obs=critic_obs_batch, actions=None, env=self.symmetry_cfg["env"], is_critic=True
+                )
+                _, actions_batch = data_augmentation_func(
+                    obs=None, actions=actions_batch, env=self.symmetry_cfg["env"]
+                )
+                # compute number of augmentations per sample
+                num_aug = int(obs_batch.shape[-2] / original_batch_size)
+                # repeat the rest of the batch
+                repeat_dims = [1] * (obs_batch.dim() - 1)
+                repeat_dims.insert(-1, num_aug)
+                # --actor
+                old_actions_log_prob_batch = old_actions_log_prob_batch.repeat(*repeat_dims)
+                # --critic
+                target_values_batch = target_values_batch.repeat(*repeat_dims)
+                advantages_batch = advantages_batch.repeat(*repeat_dims)
+                returns_batch = returns_batch.repeat(*repeat_dims)
+                
+            # Recompute actions log prob and entropy for current batch of transitions
+            # Note: we need to fo this because we updated the actor_critic with the new parameters
+            # -- actor
             self.actor_critic.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
             actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
+            # -- critic
             value_batch = self.actor_critic.evaluate(
                 critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1]
             )
-            mu_batch = self.actor_critic.action_mean
-            sigma_batch = self.actor_critic.action_std
-            entropy_batch = self.actor_critic.entropy
+            # --entropy
+            # we only keep the entropy of the first augmentation (the original one)
+            mu_batch = self.actor_critic.action_mean[..., :original_batch_size, :]
+            sigma_batch = self.actor_critic.action_std[..., :original_batch_size, :]
+            entropy_batch = self.actor_critic.entropy[..., :original_batch_size]
 
             # KL
             if self.desired_kl is not None and self.schedule == "adaptive":
@@ -168,18 +246,51 @@ class PPO:
 
             loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
 
+            # Symmetry loss
+            if self.use_symmetry:
+                # obtain the symmetric actions
+                # if we did augmentation before then we don't need to augment again
+                # this is if we want to do augmentation and mirror loss
+                if not self.symmetry_cfg["use_data_augmentation"]:
+                    data_augmentation_func = self.symmetry_cfg["data_augmentation_func"]
+                    obs_batch, _ = data_augmentation_func(
+                        obs=obs_batch, actions=None, env=self.symmetry_cfg["env"]
+                    )
+                    _, actions_batch = data_augmentation_func(
+                        obs=None, actions=actions_batch, env=self.symmetry_cfg["env"]
+                    )
+                # actions predicted by the actor
+                pred_actions_batch = self.actor_critic.act_inference(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
+                # compute the loss
+                mse_loss = torch.nn.MSELoss()
+                symmetry_loss = mse_loss(pred_actions_batch, actions_batch)
+                # add the loss to the total loss
+                if self.symmetry_cfg["use_mirror_loss"]:
+                    loss += self.symmetry_cfg["mirror_loss_coeff"] * symmetry_loss
+                else:
+                    symmetry_loss = symmetry_loss.detach()
             # Gradient step
             self.optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
             self.optimizer.step()
 
+            # Store the losses
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
+            mean_entropy += entropy_batch.mean().item()
+            
+            # -- Symmetry loss
+            if self.use_symmetry and mean_surrogate_loss is not None:
+                mean_symmetry_loss += symmetry_loss.item()
 
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
+        # -- For Symmetry
+        if mean_symmetry_loss is not None:
+            mean_symmetry_loss /= num_updates
+        # -- Clear the storage
         self.storage.clear()
 
-        return mean_value_loss, mean_surrogate_loss
+        return mean_value_loss, mean_surrogate_loss, mean_entropy, mean_symmetry_loss
