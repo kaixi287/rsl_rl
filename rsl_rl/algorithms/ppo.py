@@ -32,6 +32,7 @@ class PPO:
         desired_kl=0.01,
         device="cpu",
         symmetry_cfg: dict | None = None,
+        **kwargs,
     ):
         self.device = device
 

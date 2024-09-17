@@ -174,15 +174,11 @@ class RolloutStorage:
         # Store the final hidden states for use in the next epoch
         self.augmented_hidden_states = (hidden_actor, hidden_critic)
 
+        # TODO: adjust for gru
         hid_states_actor_batch = [torch.stack([h[0] for h in augmented_hidden_actor], dim=0),
                                 torch.stack([h[1] for h in augmented_hidden_actor], dim=0)]
         hid_states_critic_batch = [torch.stack([h[0] for h in augmented_hidden_critic], dim=0),
                                 torch.stack([h[1] for h in augmented_hidden_critic], dim=0)]
-
-        # TODO: What cause the discrepancy in the hidden states?
-        # actor_comparison = all(torch.allclose(hid_states_actor_batch[i][..., :self.num_envs, :], self.saved_hidden_states_a[i], atol=1e-3) for i in range(len(hid_states_actor_batch)))
-        # critic_comparison = all(torch.allclose(hid_states_critic_batch[i][..., :self.num_envs, :], self.saved_hidden_states_c[i], atol=1e-3) for i in range(len(hid_states_critic_batch)))
-
         hidden_states_actor = [torch.cat((self.saved_hidden_states_a[i], hid_states_actor_batch[i][..., self.num_envs:, :]), dim=2) for i in range(len(self.saved_hidden_states_a))]
         hidden_states_critic = [torch.cat((self.saved_hidden_states_c[i], hid_states_critic_batch[i][..., self.num_envs:, :]), dim=2) for i in range(len(self.saved_hidden_states_c))]
 
