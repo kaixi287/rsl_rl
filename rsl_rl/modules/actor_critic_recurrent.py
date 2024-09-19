@@ -33,8 +33,8 @@ class ActorCriticRecurrent(ActorCritic):
             )
 
         super().__init__(
-            num_actor_obs=rnn_hidden_size,
-            num_critic_obs=rnn_hidden_size,
+            num_actor_obs=rnn_hidden_size+num_actor_obs,
+            num_critic_obs=rnn_hidden_size+num_critic_obs,
             num_actions=num_actions,
             actor_hidden_dims=actor_hidden_dims,
             critic_hidden_dims=critic_hidden_dims,
@@ -98,6 +98,8 @@ class Memory(torch.nn.Module):
             if hidden_states is None:
                 raise ValueError("Hidden states not passed to memory module during policy update")
             out, _ = self.rnn(input, hidden_states)
+            # Concatenate the input to the output
+            out = torch.cat([out, input], dim=-1)
             out = unpad_trajectories(out, masks)
         else:
             if input.dim() < 3:
@@ -108,6 +110,10 @@ class Memory(torch.nn.Module):
             else:
                 # inference mode (collection): use hidden states of last step
                 out, self.hidden_states = self.rnn(input, self.hidden_states)
+            out = torch.cat([out, input], dim=-1)
+            # Remove batch dimension if input was 2D
+            if input.size(0) == 1:
+                out = out.squeeze(0)
         return out
 
     def reset(self, dones=None):
