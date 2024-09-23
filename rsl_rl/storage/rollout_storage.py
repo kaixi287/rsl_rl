@@ -174,7 +174,7 @@ class RolloutStorage:
         # Store the final hidden states for use in the next epoch
         self.augmented_hidden_states = (hidden_actor, hidden_critic)
 
-        # TODO: adapt to gru
+        # TODO: adjust for gru
         hid_states_actor_batch = [torch.stack([h[0] for h in augmented_hidden_actor], dim=0),
                                 torch.stack([h[1] for h in augmented_hidden_actor], dim=0)]
         hid_states_critic_batch = [torch.stack([h[0] for h in augmented_hidden_critic], dim=0),
