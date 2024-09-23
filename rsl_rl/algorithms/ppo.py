@@ -32,6 +32,7 @@ class PPO:
         desired_kl=0.01,
         device="cpu",
         symmetry_cfg: dict | None = None,
+        **kwargs,
     ):
         self.device = device
 
@@ -77,13 +78,6 @@ class PPO:
         self.lam = lam
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
-        
-        # For RNN: hidden states of augmented data
-        if self.use_symmetry and self.symmetry_cfg["use_data_augmentation"] and self.actor_critic.is_recurrent:
-            self.augmented_hidden = {}
-        
-        # We need to store last critic observation to get identical augmented critic hidden states
-        self.last_critic_obs = None
 
     def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
         self.storage = RolloutStorage(
@@ -128,7 +122,6 @@ class PPO:
         # TODO: check if this is correct
         last_critic_hidden = None
         if self.actor_critic.is_recurrent:
-            self.last_critic_obs = last_critic_obs
             last_critic_hidden = self.actor_critic.get_hidden_states()[1]
         last_values = self.actor_critic.evaluate(last_critic_obs, hidden_states=last_critic_hidden).detach()
         self.storage.compute_returns(last_values, self.gamma, self.lam)
@@ -143,7 +136,7 @@ class PPO:
         else:
             mean_symmetry_loss = None
         if self.actor_critic.is_recurrent:
-            generator = self.storage.recurrent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs, self.symmetry_cfg, self.last_critic_obs)
+            generator = self.storage.recurrent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs, self.symmetry_cfg)
         else:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         for (
