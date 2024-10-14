@@ -103,7 +103,7 @@ class Memory(torch.nn.Module):
             if input.dim() < 3:
                 input = input.unsqueeze(0)
             if hidden_states is not None:
-                # Provided hidden states are not used for next step
+                # Use provided hidden states
                 out, self.hidden_out = self.rnn(input, hidden_states)
             else:
                 # inference mode (collection): use hidden states of last step

@@ -58,6 +58,7 @@ class OnPolicyRunner:
         else:
             self.obs_normalizer = torch.nn.Identity()  # no normalization
             self.critic_obs_normalizer = torch.nn.Identity()  # no normalization
+        self.meta_episode_length = self.alg_cfg.get("meta_episode_length", 1)
         # init storage and model
         self.alg.init_storage(
             self.env.num_envs,
@@ -102,7 +103,11 @@ class OnPolicyRunner:
             self.env.episode_length_buf = torch.randint_like(
                 self.env.episode_length_buf, high=int(self.env.max_episode_length)
             )
-            
+        
+        meta_episode_dones = None
+        if self.meta_episode_length > 0:
+            meta_episode_counter = torch.zeros(self.env.num_envs, dtype=torch.int64, device=self.device)  # Keep track of meta-episode lengths
+
         # start learning
         obs, extras = self.env.get_observations()
         critic_obs = extras["observations"].get("critic", obs)
@@ -140,8 +145,17 @@ class OnPolicyRunner:
                         rewards.to(self.device),
                         dones.to(self.device),
                     )
+
+                    if self.meta_episode_length > 0:
+                        # Check done is boolean or binary
+                        meta_episode_counter[dones > 0] += 1
+                        # Check if any environment has terminated its meta-episode
+                        meta_episode_dones = (meta_episode_counter >= self.meta_episode_length)
+                        # Reset meta-episode counter for environments where meta-episodes ended
+                        meta_episode_counter[meta_episode_dones] = 0
+
                     # Process env step and store in buffer
-                    self.alg.process_env_step(rewards, dones, infos)
+                    self.alg.process_env_step(rewards, dones, infos, meta_episode_dones)
 
                     if self.log_dir is not None:
                         # Book keeping

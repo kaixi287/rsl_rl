@@ -22,6 +22,7 @@ class RolloutStorage:
             self.action_mean = None
             self.action_sigma = None
             self.hidden_states = None
+            self.meta_episode_dones = None
 
         def clear(self):
             self.__init__()
@@ -47,6 +48,7 @@ class RolloutStorage:
         self.rewards = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
         self.actions = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
         self.dones = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device).byte()
+        self.meta_episode_dones = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device).byte()
 
         # For PPO
         self.actions_log_prob = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
@@ -89,6 +91,7 @@ class RolloutStorage:
         
         # For RNN networks
         self._save_hidden_states(transition.hidden_states)
+        self.meta_episode_dones[self.step].copy_(transition.meta_episode_dones.view(-1, 1))
         
         # increment the counter
         self.step += 1
@@ -147,7 +150,7 @@ class RolloutStorage:
         trajectory_lengths = done_indices[1:] - done_indices[:-1]
         return trajectory_lengths.float().mean(), self.rewards.mean()
     
-    def process_augmented_observations(self, observations, critic_observations, dones):
+    def get_augmented_hidden_states(self, observations, critic_observations, dones):
         seq_len, augmented_batch_size = observations.shape[:2]
         dones = dones.squeeze(-1).bool()
 
@@ -230,10 +233,10 @@ class RolloutStorage:
                 ), None
 
     # for RNNs only
-    def recurrent_mini_batch_generator(self, num_mini_batches, num_epochs=8, symmetry_cfg=None, last_critic_obs=None):
+    def recurrent_mini_batch_generator(self, num_mini_batches, num_epochs=8, symmetry_cfg=None):
         num_aug = 1
         if symmetry_cfg is not None and symmetry_cfg["use_data_augmentation"]:
-            # original batch size
+            # Get the augmented observations and actions
             data_augmentation_func = symmetry_cfg["data_augmentation_func"]
             observations, actions = data_augmentation_func(obs=self.observations, actions=self.actions, env=symmetry_cfg["env"])
                         
@@ -243,26 +246,19 @@ class RolloutStorage:
                 )
             else:
                 critic_observations = observations
-            
-            # TODO: do we want to keep the forward pass of the last critic observation?
-            # Keep this for now for debug usage
-            # if self.augmented_last_critics_obs is not None:
-            #     # Check if the first augmented observations are the same as the last critic observations of the previous epoch
-            #     assert torch.equal(critic_observations[0], self.augmented_last_critics_obs)
-
-            # Augment the last critic observation, this is needed to perform the additional critic forward pass
-            # self.augmented_last_critics_obs, _ = data_augmentation_func(obs=last_critic_obs, actions=None, env=symmetry_cfg["env"], is_critic=True)
-            
+                        
             # compute number of augmentations per sample
             num_aug = int(observations.shape[1] / self.num_envs)
-            dones = self.dones.repeat(1, num_aug, 1)
+            dones = self.dones.repeat(1, num_aug)
+            meta_episode_dones = self.meta_episode_dones.repeat(1, num_aug, 1)
             
-            hidden_states_actor, hidden_states_critic = self.process_augmented_observations(observations, critic_observations, dones)
+            # Get the augmented hidden states
+            hidden_states_actor, hidden_states_critic = self.get_augmented_hidden_states(observations, critic_observations, meta_episode_dones)
         else:
             observations = self.observations
             critic_observations = self.privileged_observations if self.privileged_observations is not None else self.observations
             actions = self.actions
-            dones = self.dones
+            dones = self.dones.squeeze(-1)
             
             hidden_states_actor = self.saved_hidden_states_a
             hidden_states_critic = self.saved_hidden_states_c
@@ -271,7 +267,6 @@ class RolloutStorage:
         padded_critic_obs_trajectories, _ = split_and_pad_trajectories(critic_observations, dones)
         
         original_batch_size = padded_obs_trajectories.shape[1] // num_aug
-        dones = dones.squeeze(-1)
 
         mini_batch_size = self.num_envs // num_mini_batches
         for ep in range(num_epochs):

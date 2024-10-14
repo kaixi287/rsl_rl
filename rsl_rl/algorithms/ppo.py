@@ -104,22 +104,32 @@ class PPO:
         self.transition.critic_observations = critic_obs
         return self.transition.actions
 
-    def process_env_step(self, rewards, dones, infos):
+    def process_env_step(self, rewards, dones, infos, meta_episode_dones=None):
         self.transition.rewards = rewards.clone()
         self.transition.dones = dones
+        
         # Bootstrapping on time outs
         if "time_outs" in infos:
             self.transition.rewards += self.gamma * torch.squeeze(
                 self.transition.values * infos["time_outs"].unsqueeze(1).to(self.device), 1
             )
+        
+        # Process the meta-episode dones and reset done envs
+        if meta_episode_dones is not None:
+            self.transition.meta_episode_dones = meta_episode_dones
+            # Reset the actor-critic hidden states according to meta-episode dones
+            self.actor_critic.reset(meta_episode_dones)
+        else:
+            self.transition.meta_episode_dones = dones
+            # Reset the actor-critic hidden states according to nominal eipsode dones
+            self.actor_critic.reset(dones)
 
         # Record the transition
         self.storage.add_transitions(self.transition)
         self.transition.clear()
-        self.actor_critic.reset(dones)
 
     def compute_returns(self, last_critic_obs):
-        # TODO: check if this is correct
+        # Note that we modify here to not update the hidden states
         last_critic_hidden = None
         if self.actor_critic.is_recurrent:
             last_critic_hidden = self.actor_critic.get_hidden_states()[1]
