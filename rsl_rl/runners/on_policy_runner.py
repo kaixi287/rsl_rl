@@ -147,7 +147,6 @@ class OnPolicyRunner:
                     )
 
                     if self.meta_episode_length > 0:
-                        # Check done is boolean or binary
                         meta_episode_counter[dones > 0] += 1
                         # Check if any environment has terminated its meta-episode
                         meta_episode_dones = (meta_episode_counter >= self.meta_episode_length)

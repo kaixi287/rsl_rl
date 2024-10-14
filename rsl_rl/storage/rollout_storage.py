@@ -249,7 +249,7 @@ class RolloutStorage:
                         
             # compute number of augmentations per sample
             num_aug = int(observations.shape[1] / self.num_envs)
-            dones = self.dones.repeat(1, num_aug)
+            dones = self.dones.repeat(1, num_aug, 1)
             meta_episode_dones = self.meta_episode_dones.repeat(1, num_aug, 1)
             
             # Get the augmented hidden states
@@ -258,7 +258,7 @@ class RolloutStorage:
             observations = self.observations
             critic_observations = self.privileged_observations if self.privileged_observations is not None else self.observations
             actions = self.actions
-            dones = self.dones.squeeze(-1)
+            dones = self.dones
             
             hidden_states_actor = self.saved_hidden_states_a
             hidden_states_critic = self.saved_hidden_states_c
@@ -267,6 +267,7 @@ class RolloutStorage:
         padded_critic_obs_trajectories, _ = split_and_pad_trajectories(critic_observations, dones)
         
         original_batch_size = padded_obs_trajectories.shape[1] // num_aug
+        dones = dones.squeeze(-1)
 
         mini_batch_size = self.num_envs // num_mini_batches
         for ep in range(num_epochs):
