@@ -58,7 +58,7 @@ class OnPolicyRunner:
         else:
             self.obs_normalizer = torch.nn.Identity()  # no normalization
             self.critic_obs_normalizer = torch.nn.Identity()  # no normalization
-        self.meta_episode_length = self.alg_cfg.get("meta_episode_length", 1)
+        self.meta_episode_length = getattr(self.alg_cfg, "meta_episode_length", 1)
         # init storage and model
         self.alg.init_storage(
             self.env.num_envs,
@@ -146,7 +146,7 @@ class OnPolicyRunner:
                         dones.to(self.device),
                     )
 
-                    if self.meta_episode_length > 0:
+                    if self.meta_episode_length > 1:
                         meta_episode_counter[dones > 0] += 1
                         # Check if any environment has terminated its meta-episode
                         meta_episode_dones = (meta_episode_counter >= self.meta_episode_length)
