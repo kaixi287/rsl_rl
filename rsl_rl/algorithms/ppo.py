@@ -32,7 +32,6 @@ class PPO:
         desired_kl=0.01,
         device="cpu",
         symmetry_cfg: dict | None = None,
-        eval_mode=False,
         **kwargs,
     ):
         self.device = device
@@ -79,7 +78,6 @@ class PPO:
         self.lam = lam
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
-        self.eval_mode = eval_mode
 
     def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
         self.storage = RolloutStorage(
@@ -280,11 +278,9 @@ class PPO:
             nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
             self.optimizer.step()
 
-            if not self.eval_mode:
-                # Store the losses
-                mean_value_loss += value_loss.item()
-                mean_surrogate_loss += surrogate_loss.item()
-                mean_entropy += entropy_batch.mean().item()
+            mean_value_loss += value_loss.item()
+            mean_surrogate_loss += surrogate_loss.item()
+            mean_entropy += entropy_batch.mean().item()
             
             # -- Symmetry loss
             if self.use_symmetry and mean_surrogate_loss is not None:
