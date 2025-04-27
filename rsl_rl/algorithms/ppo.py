@@ -32,7 +32,6 @@ class PPO:
         desired_kl=0.01,
         device="cpu",
         symmetry_cfg: dict | None = None,
-        eval_mode=False,
         **kwargs,
     ):
         self.device = device
@@ -79,12 +78,20 @@ class PPO:
         self.lam = lam
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
-        self.eval_mode = eval_mode
+        self.obs_history = None
+        self.critic_obs_history = None
 
     def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
         self.storage = RolloutStorage(
             num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, self.actor_critic, self.device
         )
+        if self.actor_critic.with_history:
+            self.obs_history = torch.zeros(
+                (num_envs, self.actor_critic.history_len, *actor_obs_shape), dtype=torch.float32, device=self.device
+            )
+            self.critic_obs_history = torch.zeros(
+                (num_envs, self.actor_critic.history_len, *critic_obs_shape), dtype=torch.float32, device=self.device
+            )
 
     def test_mode(self):
         self.actor_critic.test()
@@ -92,12 +99,40 @@ class PPO:
     def train_mode(self):
         self.actor_critic.train()
 
+    def get_stacked_obs(self, new_obs, new_critic_obs):
+        if self.obs_history is None or self.critic_obs_history is None:
+            raise ValueError("Obs history is not initialized. Cannot stack observations.")
+        # Shift left and insert the latest obs
+        self.obs_history = torch.roll(self.obs_history, shifts=-1, dims=1)
+        self.obs_history[:, -1, :] = new_obs
+        stacked_obs = self.obs_history.reshape(new_obs.shape[0], -1)
+        # Shift left and insert the latest critic obs
+        self.critic_obs_history = torch.roll(self.critic_obs_history, shifts=-1, dims=1)
+        self.critic_obs_history[:, -1, :] = new_critic_obs
+        stacked_critic_obs = self.critic_obs_history.reshape(new_critic_obs.shape[0], -1)
+        return stacked_obs, stacked_critic_obs
+
+    def reset_obs_history(self, dones):
+        if self.obs_history is None or self.critic_obs_history is None:
+            return
+        # Reset history where done=True
+        dones = dones.view(-1)
+        for env_idx in range(dones.shape[0]):
+            if dones[env_idx]:
+                self.obs_history[env_idx] = 0.0
+
     def act(self, obs, critic_obs):
         if self.actor_critic.is_recurrent:
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
-        # Compute the actions and values
-        self.transition.actions = self.actor_critic.act(obs).detach()
-        self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
+
+        if self.actor_critic.with_history:
+            stacked_obs, stacked_critic_obs = self.get_stacked_obs(obs, critic_obs)
+            self.transition.actions = self.actor_critic.act(stacked_obs).detach()
+            self.transition.values = self.actor_critic.evaluate(stacked_critic_obs).detach()
+        else:
+            # Compute the actions and values
+            self.transition.actions = self.actor_critic.act(obs).detach()
+            self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
         self.transition.actions_log_prob = self.actor_critic.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.actor_critic.action_mean.detach()
         self.transition.action_sigma = self.actor_critic.action_std.detach()
@@ -110,6 +145,10 @@ class PPO:
         self.transition.rewards = rewards.clone()
         self.transition.dones = dones
         
+        if self.actor_critic.with_history:
+            # Reset history for done environments
+            self.reset_obs_history(meta_episode_dones if meta_episode_dones is not None else dones)
+
         # Bootstrapping on time outs
         if "time_outs" in infos:
             self.transition.rewards += self.gamma * torch.squeeze(
@@ -147,7 +186,7 @@ class PPO:
             mean_symmetry_loss = 0
         else:
             mean_symmetry_loss = None
-        if self.actor_critic.is_recurrent:
+        if self.actor_critic.is_recurrent or self.actor_critic.with_history:
             generator = self.storage.recurrent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs, self.symmetry_cfg)
         else:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
@@ -279,12 +318,10 @@ class PPO:
             loss.backward()
             nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
             self.optimizer.step()
-
-            if not self.eval_mode:
-                # Store the losses
-                mean_value_loss += value_loss.item()
-                mean_surrogate_loss += surrogate_loss.item()
-                mean_entropy += entropy_batch.mean().item()
+            # Store the losses
+            mean_value_loss += value_loss.item()
+            mean_surrogate_loss += surrogate_loss.item()
+            mean_entropy += entropy_batch.mean().item()
             
             # -- Symmetry loss
             if self.use_symmetry and mean_surrogate_loss is not None:

@@ -151,6 +151,8 @@ class RolloutStorage:
         return trajectory_lengths.float().mean(), self.rewards.mean()
     
     def get_augmented_hidden_states(self, observations, critic_observations, dones):
+        if not self.actor_critic.is_recurrent:
+            return None, None
         seq_len, augmented_batch_size = observations.shape[:2]
         dones = dones.squeeze(-1).bool()
 
@@ -313,21 +315,24 @@ class RolloutStorage:
                 # then take only time steps after dones (flattens num envs and time dimensions),
                 # take a batch of trajectories and finally reshape back to [num_layers, batch, hidden_dim]
                 last_was_done = last_was_done.permute(1, 0)
-                hid_a_batch = [
-                    saved_hidden_states.permute(2, 0, 1, 3)[last_was_done][traj_indices]
-                    .transpose(1, 0)
-                    .contiguous()
-                    for saved_hidden_states in hidden_states_actor
-                ]
-                hid_c_batch = [
-                    saved_hidden_states.permute(2, 0, 1, 3)[last_was_done][traj_indices]
-                    .transpose(1, 0)
-                    .contiguous()
-                    for saved_hidden_states in hidden_states_critic
-                ]
-                # remove the tuple for GRU
-                hid_a_batch = hid_a_batch[0] if len(hid_a_batch) == 1 else hid_a_batch
-                hid_c_batch = hid_c_batch[0] if len(hid_c_batch) == 1 else hid_c_batch
+                hid_a_batch = None
+                hid_c_batch = None
+                if self.actor_critic.is_recurrent:
+                    hid_a_batch = [
+                        saved_hidden_states.permute(2, 0, 1, 3)[last_was_done][traj_indices]
+                        .transpose(1, 0)
+                        .contiguous()
+                        for saved_hidden_states in hidden_states_actor
+                    ]
+                    hid_c_batch = [
+                        saved_hidden_states.permute(2, 0, 1, 3)[last_was_done][traj_indices]
+                        .transpose(1, 0)
+                        .contiguous()
+                        for saved_hidden_states in hidden_states_critic
+                    ]
+                    # remove the tuple for GRU
+                    hid_a_batch = hid_a_batch[0] if len(hid_a_batch) == 1 else hid_a_batch
+                    hid_c_batch = hid_c_batch[0] if len(hid_c_batch) == 1 else hid_c_batch
 
                 yield obs_batch, critic_obs_batch, actions_batch, values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (
                     hid_a_batch,

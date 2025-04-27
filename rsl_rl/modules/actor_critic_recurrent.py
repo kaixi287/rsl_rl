@@ -12,6 +12,7 @@ from rsl_rl.utils import resolve_nn_activation, unpad_trajectories
 
 class ActorCriticRecurrent(ActorCritic):
     is_recurrent = True
+    with_history = False
 
     def __init__(
         self,

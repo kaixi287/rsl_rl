@@ -13,6 +13,7 @@ from rsl_rl.utils import resolve_nn_activation
 
 class ActorCritic(nn.Module):
     is_recurrent = False
+    with_history = False
 
     def __init__(
         self,
