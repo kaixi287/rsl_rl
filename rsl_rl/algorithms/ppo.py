@@ -269,14 +269,12 @@ class PPO:
                 else:
                     num_aug = int(obs_batch.shape[0] / original_batch_size)
                 # repeat the rest of the batch
-                repeat_dims = [1] * (obs_batch.dim() - 1)
-                repeat_dims.insert(-1, num_aug)
                 # --actor
-                old_actions_log_prob_batch = old_actions_log_prob_batch.repeat(*repeat_dims)
+                old_actions_log_prob_batch = old_actions_log_prob_batch.repeat(num_aug, 1)
                 # --critic
-                target_values_batch = target_values_batch.repeat(*repeat_dims)
-                advantages_batch = advantages_batch.repeat(*repeat_dims)
-                returns_batch = returns_batch.repeat(*repeat_dims)
+                target_values_batch = target_values_batch.repeat(num_aug, 1)
+                advantages_batch = advantages_batch.repeat(num_aug, 1)
+                returns_batch = returns_batch.repeat(num_aug, 1)
             # we only keep the entropy of the first augmentation (the original one)
                 
             # check if we should normalize advantages per mini batch
