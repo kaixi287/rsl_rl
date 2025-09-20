@@ -267,7 +267,7 @@ class PPO:
                 if self.policy.is_recurrent:
                     num_aug = int((obs_batch.shape[0] if hasattr(obs_batch, 'shape') else len(obs_batch)) / original_batch_size)
                 else:
-                    num_aug = int(obs_batch.shape[-2] / original_batch_size)
+                    num_aug = int(obs_batch.shape[0] / original_batch_size)
                 # repeat the rest of the batch
                 repeat_dims = [1] * (obs_batch.dim() - 1)
                 repeat_dims.insert(-1, num_aug)
