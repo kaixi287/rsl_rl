@@ -268,7 +268,7 @@ class RolloutStorage:
                         
             if self.privileged_observations is not None:
                 critic_observations, _ = data_augmentation_func(
-                    obs=self.privileged_observations, actions=None, env=symmetry_cfg["_env"], is_critic=True
+                    obs=self.privileged_observations, actions=None, env=symmetry_cfg["_env"]
                 )
             else:
                 critic_observations = observations

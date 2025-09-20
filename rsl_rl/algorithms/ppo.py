@@ -256,7 +256,7 @@ class PPO:
                 obs_batch, _ = data_augmentation_func(obs=obs_batch, actions=None, env=self.symmetry_cfg["_env"])
                 if 'critic_obs_batch' in locals():  # has critic_obs_batch
                     critic_obs_batch, _ = data_augmentation_func(
-                        obs=critic_obs_batch, actions=None, env=self.symmetry_cfg["_env"], is_critic=True
+                        obs=critic_obs_batch, actions=None, env=self.symmetry_cfg["_env"]
                     )
                 else:
                     critic_obs_batch = obs_batch
