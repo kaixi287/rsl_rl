@@ -253,15 +253,15 @@ class PPO:
                 # augmentation using symmetry
                 # returned shape: [batch_size * num_aug, ...]
                 data_augmentation_func = self.symmetry_cfg["data_augmentation_func"]
-                obs_batch, _ = data_augmentation_func(obs=obs_batch, actions=None, env=self.symmetry_cfg["env"])
+                obs_batch, _ = data_augmentation_func(obs=obs_batch, actions=None, env=self.symmetry_cfg["_env"])
                 if 'critic_obs_batch' in locals():  # has critic_obs_batch
                     critic_obs_batch, _ = data_augmentation_func(
-                        obs=critic_obs_batch, actions=None, env=self.symmetry_cfg["env"], is_critic=True
+                        obs=critic_obs_batch, actions=None, env=self.symmetry_cfg["_env"], is_critic=True
                     )
                 else:
                     critic_obs_batch = obs_batch
                 _, actions_batch = data_augmentation_func(
-                    obs=None, actions=actions_batch, env=self.symmetry_cfg["env"]
+                    obs=None, actions=actions_batch, env=self.symmetry_cfg["_env"]
                 )
                 # compute number of augmentations per sample
                 if self.policy.is_recurrent:
@@ -366,7 +366,7 @@ class PPO:
                 if not self.symmetry_cfg.get("use_data_augmentation", False):
                     data_augmentation_func = self.symmetry_cfg["data_augmentation_func"]
                     obs_batch, _ = data_augmentation_func(
-                        obs=obs_batch, actions=None, env=self.symmetry_cfg["env"]
+                        obs=obs_batch, actions=None, env=self.symmetry_cfg["_env"]
                     )
                     # compute number of augmentations per sample
                     num_aug = int(obs_batch.shape[0] / original_batch_size) if not self.policy.is_recurrent else int(obs_batch.batch_size[0] / original_batch_size)
@@ -380,7 +380,7 @@ class PPO:
                 #   However, the symmetry loss is computed using the mean of the distribution.
                 action_mean_orig = mean_actions_batch[:original_batch_size]
                 _, actions_mean_symm_batch = data_augmentation_func(
-                    obs=None, actions=action_mean_orig, env=self.symmetry_cfg["env"]
+                    obs=None, actions=action_mean_orig, env=self.symmetry_cfg["_env"]
                 )
 
                 # compute the loss (we skip the first augmentation as it is the original one)

@@ -264,11 +264,11 @@ class RolloutStorage:
         if symmetry_cfg is not None and symmetry_cfg["use_data_augmentation"]:
             # original batch size
             data_augmentation_func = symmetry_cfg["data_augmentation_func"]
-            observations, actions = data_augmentation_func(obs=self.observations, actions=self.actions, env=symmetry_cfg["env"])
+            observations, actions = data_augmentation_func(obs=self.observations, actions=self.actions, env=symmetry_cfg["_env"])
                         
             if self.privileged_observations is not None:
                 critic_observations, _ = data_augmentation_func(
-                    obs=self.privileged_observations, actions=None, env=symmetry_cfg["env"], is_critic=True
+                    obs=self.privileged_observations, actions=None, env=symmetry_cfg["_env"], is_critic=True
                 )
             else:
                 critic_observations = observations
