@@ -246,10 +246,7 @@ class PPO:
             # we start with 1 and increase it if we use symmetry augmentation
             num_aug = 1
             # original batch size
-            if self.policy.is_recurrent:
-                original_batch_size = obs_batch.shape[0] if hasattr(obs_batch, 'shape') else len(obs_batch)
-            else:
-                original_batch_size = obs_batch.shape[-2]
+            original_batch_size = obs_batch.shape[0]
             
             # Perform symmetric augmentation
             if self.use_symmetry and self.symmetry_cfg and self.symmetry_cfg.get("use_data_augmentation", False) and not self.policy.is_recurrent:
