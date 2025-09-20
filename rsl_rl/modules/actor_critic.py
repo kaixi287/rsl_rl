@@ -37,7 +37,6 @@ class ActorCritic(nn.Module):
                 + str([key for key in kwargs.keys()])
             )
         super().__init__()
-        activation = resolve_nn_activation(activation)
 
         # get the observation dimensions
         self.obs_groups = obs_groups
