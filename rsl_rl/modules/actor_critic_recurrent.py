@@ -215,7 +215,6 @@ class ActorCriticRecurrent(nn.Module):
             critic_obs = self.get_critic_obs(obs)
             self.critic_obs_normalizer.update(critic_obs)
 
-<<<<<<< HEAD
 class Memory(torch.nn.Module):
     def __init__(self, input_size, type="lstm", num_layers=1, hidden_size=256):
         super().__init__()

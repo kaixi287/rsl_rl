@@ -117,7 +117,7 @@ class PPO:
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
         
         # For RNN: hidden states of augmented data
-        if self.use_symmetry and self.symmetry_cfg["use_data_augmentation"] and self.policy.is_recurrent:
+        if self.use_symmetry and self.symmetry_cfg and self.symmetry_cfg.get("use_data_augmentation", False) and self.policy.is_recurrent:
             self.augmented_hidden = {}
         
         # We need to store last critic observation to get identical augmented critic hidden states
@@ -137,16 +137,17 @@ class PPO:
 
     def act(self, obs):
         if self.policy.is_recurrent:
-            self.transition.hidden_states = self.policy.get_hidden_states()
+            self.transition.hidden_states = self.policy.get_hidden_states()  # type: ignore
         # compute the actions and values
-        self.transition.actions = self.policy.act(obs).detach()
-        self.transition.values = self.policy.evaluate(obs).detach()
-        self.transition.actions_log_prob = self.policy.get_actions_log_prob(self.transition.actions).detach()
-        self.transition.action_mean = self.policy.action_mean.detach()
-        self.transition.action_sigma = self.policy.action_std.detach()
+        actions = self.policy.act(obs).detach()
+        self.transition.actions = actions  # type: ignore
+        self.transition.values = self.policy.evaluate(obs).detach()  # type: ignore
+        self.transition.actions_log_prob = self.policy.get_actions_log_prob(actions).detach()  # type: ignore
+        self.transition.action_mean = self.policy.action_mean.detach()  # type: ignore
+        self.transition.action_sigma = self.policy.action_std.detach()  # type: ignore
         # need to record obs before env.step()
-        self.transition.observations = obs
-        return self.transition.actions
+        self.transition.observations = obs  # type: ignore
+        return actions
 
     def process_env_step(self, obs, rewards, dones, extras):
         # update the normalizers
@@ -182,7 +183,8 @@ class PPO:
         last_critic_hidden = None
         if self.policy.is_recurrent:
             self.last_critic_obs = last_critic_obs
-            last_critic_hidden = self.policy.get_hidden_states()[1]
+            hidden_states = self.policy.get_hidden_states()  # type: ignore
+            last_critic_hidden = hidden_states[1] if hidden_states is not None else None
         last_values = self.policy.evaluate(last_critic_obs, hidden_states=last_critic_hidden).detach()
         self.storage.compute_returns(
             last_values, self.gamma, self.lam, normalize_advantage=not self.normalize_advantage_per_mini_batch
@@ -210,35 +212,52 @@ class PPO:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
 
         # iterate over batches
-        for (
-            obs_batch,
-            actions_batch,
-            target_values_batch,
-            advantages_batch,
-            returns_batch,
-            old_actions_log_prob_batch,
-            old_mu_batch,
-            old_sigma_batch,
-            hid_states_batch,
-            masks_batch,
-        ) in generator:
+        for batch_data in generator:
+            if len(batch_data) == 11:  # recurrent with critic obs
+                (
+                    obs_batch,
+                    critic_obs_batch,
+                    actions_batch,
+                    target_values_batch,
+                    advantages_batch,
+                    returns_batch,
+                    old_actions_log_prob_batch,
+                    old_mu_batch,
+                    old_sigma_batch,
+                    hid_states_batch,
+                    masks_batch,
+                ) = batch_data
+            else:  # non-recurrent or recurrent without critic obs
+                (
+                    obs_batch,
+                    actions_batch,
+                    target_values_batch,
+                    advantages_batch,
+                    returns_batch,
+                    old_actions_log_prob_batch,
+                    old_mu_batch,
+                    old_sigma_batch,
+                    hid_states_batch,
+                    masks_batch,
+                ) = batch_data
+                critic_obs_batch = obs_batch  # fallback to obs_batch
 
             # number of augmentations per sample
             # we start with 1 and increase it if we use symmetry augmentation
             num_aug = 1
             # original batch size
             if self.policy.is_recurrent:
-                original_batch_size = obs_batch.batch_size[0]
+                original_batch_size = obs_batch.shape[0] if hasattr(obs_batch, 'shape') else len(obs_batch)
             else:
                 original_batch_size = obs_batch.shape[-2]
             
             # Perform symmetric augmentation
-            if self.use_symmetry and self.symmetry_cfg["use_data_augmentation"] and not self.policy.is_recurrent:
+            if self.use_symmetry and self.symmetry_cfg and self.symmetry_cfg.get("use_data_augmentation", False) and not self.policy.is_recurrent:
                 # augmentation using symmetry
                 # returned shape: [batch_size * num_aug, ...]
                 data_augmentation_func = self.symmetry_cfg["data_augmentation_func"]
                 obs_batch, _ = data_augmentation_func(obs=obs_batch, actions=None, env=self.symmetry_cfg["env"])
-                if len(generator.__iter__().__next__()) == 11:  # has critic_obs_batch
+                if 'critic_obs_batch' in locals():  # has critic_obs_batch
                     critic_obs_batch, _ = data_augmentation_func(
                         obs=critic_obs_batch, actions=None, env=self.symmetry_cfg["env"], is_critic=True
                     )
@@ -249,7 +268,7 @@ class PPO:
                 )
                 # compute number of augmentations per sample
                 if self.policy.is_recurrent:
-                    num_aug = int(obs_batch.batch_size[0] / original_batch_size)
+                    num_aug = int((obs_batch.shape[0] if hasattr(obs_batch, 'shape') else len(obs_batch)) / original_batch_size)
                 else:
                     num_aug = int(obs_batch.shape[-2] / original_batch_size)
                 # repeat the rest of the batch
@@ -274,7 +293,7 @@ class PPO:
             self.policy.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
             actions_log_prob_batch = self.policy.get_actions_log_prob(actions_batch)
             # -- critic
-            if len(generator.__iter__().__next__()) == 11:  # has critic_obs_batch (for augmentation)
+            if 'critic_obs_batch' in locals() and critic_obs_batch is not obs_batch:  # has separate critic_obs_batch
                 value_batch = self.policy.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
             else:
                 value_batch = self.policy.evaluate(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
@@ -292,7 +311,7 @@ class PPO:
                         + (torch.square(old_sigma_batch) + torch.square(old_mu_batch - mu_batch))
                         / (2.0 * torch.square(sigma_batch))
                         - 0.5,
-                        axis=-1,
+                        dim=-1,
                     )
                     kl_mean = torch.mean(kl)
 
@@ -343,39 +362,17 @@ class PPO:
             loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
 
             # Symmetry loss
-<<<<<<< HEAD
-            if self.use_symmetry:
+            if self.use_symmetry and self.symmetry_cfg:
                 # obtain the symmetric actions
                 # if we did augmentation before then we don't need to augment again
                 # this is if we want to do augmentation and mirror loss
-                if not self.symmetry_cfg["use_data_augmentation"]:
+                if not self.symmetry_cfg.get("use_data_augmentation", False):
                     data_augmentation_func = self.symmetry_cfg["data_augmentation_func"]
                     obs_batch, _ = data_augmentation_func(
                         obs=obs_batch, actions=None, env=self.symmetry_cfg["env"]
                     )
-                    _, actions_batch = data_augmentation_func(
-                        obs=None, actions=actions_batch, env=self.symmetry_cfg["env"]
-                    )
-                # actions predicted by the actor
-                pred_actions_batch = self.actor_critic.act_inference(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
-                # compute the loss
-                mse_loss = torch.nn.MSELoss()
-                symmetry_loss = mse_loss(pred_actions_batch, actions_batch)
-                # add the loss to the total loss
-                if self.symmetry_cfg["use_mirror_loss"]:
-                    loss += self.symmetry_cfg["mirror_loss_coeff"] * symmetry_loss
-                else:
-                    symmetry_loss = symmetry_loss.detach()
-            # Gradient step
-=======
-            if self.symmetry:
-                # obtain the symmetric actions
-                # if we did augmentation before then we don't need to augment again
-                if not self.symmetry["use_data_augmentation"]:
-                    data_augmentation_func = self.symmetry["data_augmentation_func"]
-                    obs_batch, _ = data_augmentation_func(obs=obs_batch, actions=None, env=self.symmetry["_env"])
                     # compute number of augmentations per sample
-                    num_aug = int(obs_batch.shape[0] / original_batch_size)
+                    num_aug = int(obs_batch.shape[0] / original_batch_size) if not self.policy.is_recurrent else int(obs_batch.batch_size[0] / original_batch_size)
 
                 # actions predicted by the actor for symmetrically-augmented observations
                 mean_actions_batch = self.policy.act_inference(obs_batch.detach().clone())
@@ -386,7 +383,7 @@ class PPO:
                 #   However, the symmetry loss is computed using the mean of the distribution.
                 action_mean_orig = mean_actions_batch[:original_batch_size]
                 _, actions_mean_symm_batch = data_augmentation_func(
-                    obs=None, actions=action_mean_orig, env=self.symmetry["_env"]
+                    obs=None, actions=action_mean_orig, env=self.symmetry_cfg["env"]
                 )
 
                 # compute the loss (we skip the first augmentation as it is the original one)
@@ -395,8 +392,8 @@ class PPO:
                     mean_actions_batch[original_batch_size:], actions_mean_symm_batch.detach()[original_batch_size:]
                 )
                 # add the loss to the total loss
-                if self.symmetry["use_mirror_loss"]:
-                    loss += self.symmetry["mirror_loss_coeff"] * symmetry_loss
+                if self.symmetry_cfg.get("use_mirror_loss", False):
+                    loss += self.symmetry_cfg.get("mirror_loss_coeff", 1.0) * symmetry_loss
                 else:
                     symmetry_loss = symmetry_loss.detach()
 
@@ -417,7 +414,6 @@ class PPO:
 
             # Compute the gradients
             # -- For PPO
->>>>>>> master
             self.optimizer.zero_grad()
             loss.backward()
             # -- For RND
@@ -425,8 +421,6 @@ class PPO:
                 self.rnd_optimizer.zero_grad()  # type: ignore
                 rnd_loss.backward()
 
-<<<<<<< HEAD
-=======
             # Collect gradients from all GPUs
             if self.is_multi_gpu:
                 self.reduce_parameters()
@@ -439,44 +433,35 @@ class PPO:
             if self.rnd_optimizer:
                 self.rnd_optimizer.step()
 
->>>>>>> master
             # Store the losses
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
             mean_entropy += entropy_batch.mean().item()
-<<<<<<< HEAD
-            
+            # -- RND loss
+            if mean_rnd_loss is not None:
+                mean_rnd_loss += rnd_loss.item()
             # -- Symmetry loss
-            if self.use_symmetry and mean_surrogate_loss is not None:
-=======
             # -- RND loss
             if mean_rnd_loss is not None:
                 mean_rnd_loss += rnd_loss.item()
             # -- Symmetry loss
             if mean_symmetry_loss is not None:
->>>>>>> master
                 mean_symmetry_loss += symmetry_loss.item()
 
         # -- For PPO
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
-<<<<<<< HEAD
-=======
         mean_entropy /= num_updates
         # -- For RND
         if mean_rnd_loss is not None:
             mean_rnd_loss /= num_updates
->>>>>>> master
         # -- For Symmetry
         if mean_symmetry_loss is not None:
             mean_symmetry_loss /= num_updates
         # -- Clear the storage
         self.storage.clear()
 
-<<<<<<< HEAD
-        return mean_value_loss, mean_surrogate_loss, mean_entropy, mean_symmetry_loss
-=======
         # construct the loss dictionary
         loss_dict = {
             "value_function": mean_value_loss,
@@ -485,7 +470,7 @@ class PPO:
         }
         if self.rnd:
             loss_dict["rnd"] = mean_rnd_loss
-        if self.symmetry:
+        if self.use_symmetry:
             loss_dict["symmetry"] = mean_symmetry_loss
 
         return loss_dict
@@ -536,4 +521,3 @@ class PPO:
                 param.grad.data.copy_(all_grads[offset : offset + numel].view_as(param.grad.data))
                 # update the offset for the next parameter
                 offset += numel
->>>>>>> master
